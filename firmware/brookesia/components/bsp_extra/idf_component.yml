@@ -4,7 +4,7 @@ dependencies:
   
   esp32_p4_nano_wifi6_db:
     version: '*'
-    override_path: ../../../esp32_p4_nano_wifi6_db
+    override_path: ../../../../components/esp32_p4_nano_wifi6_db
   
   espressif/esp_codec_dev:
     version: "*"

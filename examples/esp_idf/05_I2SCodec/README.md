@@ -34,7 +34,7 @@ In **Example Configuration**, check:
 - Microphone gain.
 - Voice volume.
 - BSP support option. It is enabled by default for ESP32-P4 and selects
-  `firmware/esp32_p4_nano_wifi6_db` from `main/idf_component.yml`.
+  `components/esp32_p4_nano_wifi6_db` from `main/idf_component.yml`.
 
 ESP32-P4-NANO-WIFI6-DB audio wiring used by the BSP:
 

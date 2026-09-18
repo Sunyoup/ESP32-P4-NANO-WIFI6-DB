@@ -33,7 +33,7 @@ idf.py -p PORT flash monitor
 - 麦克风增益。
 - 音量。
 - BSP 支持选项。ESP32-P4 默认启用该选项，并在 `main/idf_component.yml`
-  中选择 `firmware/esp32_p4_nano_wifi6_db`。
+  中选择 `components/esp32_p4_nano_wifi6_db`。
 
 ESP32-P4-NANO-WIFI6-DB BSP 使用的音频接线：
 

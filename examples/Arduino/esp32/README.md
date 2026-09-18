@@ -31,7 +31,7 @@
 
 ## 板级差异
 
-`pins_arduino.h` 按 `firmware/esp32_p4_nano_wifi6_db` BSP、活动的
+`pins_arduino.h` 按 `components/esp32_p4_nano_wifi6_db` BSP、活动的
 ESP-Hosted 配置和该工程原理图适配：
 
 - I2C1：SDA=`GPIO7`，SCL=`GPIO8`，默认 400 kHz；普通 I2C/音频示例使用 `Wire1`。
