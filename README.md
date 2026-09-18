@@ -1,103 +1,210 @@
 # ESP32-P4-NANO-WIFI6-DB
 
-Waveshare `ESP32-P4-NANO-WIFI6-DB` 的 ESP-IDF BSP、Arduino 板卡文件和示例工程。
-主控是 ESP32-P4，板载 ESP32-C5 作为无线协处理器，通过 ESP-Hosted/SDIO 与 P4
-连接；Arduino 和 ESP-IDF 应用的编译目标都是 `esp32p4`。
+A development board based on ESP32-P4 and ESP32-C5 for multimedia, networking, and edge applications.
 
-## 当前配置
+[ESP-IDF Examples](./examples/esp_idf/) · [License](#license)
 
-- Flash：16MB
-- PSRAM：已由 Arduino 板卡条目启用
-- Arduino-ESP32：`3.3.11`
-- Arduino-ESP32 内置 ESP32-P4 库：基于 ESP-IDF `v5.5.5`
-- ESP-IDF BSP：要求 IDF `>=5.5`，当前组件版本 `0.0.1`
-- Arduino 默认分区：`default_16MB`
-- 默认串口波特率：`115200`
+English · [中文](./README_CN.md) · [🌐 Product Page](https://www.waveshare.net/shop/ESP32-P4-NANO-WIFI6-DB.htm) · [📚 Official Documentation](https://docs.waveshare.net/ESP32-P4-NANO-WIFI6-DB/) · [🧩 ESP-IDF Examples](./examples/esp_idf/) · [🔧 Arduino Examples](./examples/Arduino/) · [📦 Firmware](./firmware/)
 
-## 主要硬件资源
+![ESP32-P4-NANO-WIFI6-DB](./assert/ESP32-P4-NANO-WIFI6-DB.jpg)
 
-| 功能 | 连接与说明 |
+Waveshare ESP32-P4-NANO-WIFI6-DB is a development board for multimedia, networking, and edge applications. This repository provides the matching ESP-IDF BSP, Arduino board files, peripheral examples, Brookesia firmware source, and precompiled firmware.
+
+The board uses ESP32-P4 as the main processor and connects an ESP32-C5 wireless co-processor through ESP-Hosted/SDIO. It provides interfaces for external MIPI-DSI displays, MIPI-CSI cameras, audio, microSD, Ethernet, USB Host, and GPIO expansion. The display and camera are external modules; always follow the hardware configuration and the README of the selected example.
+
+## Product Overview
+
+This repository includes:
+
+- A local ESP-IDF BSP component targeting **esp32p4**.
+- Board definitions and examples based on Arduino-ESP32 **3.3.11**.
+- ESP-IDF examples for I2C, I2S audio, SDMMC, MIPI-DSI, MIPI-CSI, Wi-Fi, Ethernet, USB, and NVS.
+- Brookesia application firmware source under **firmware/brookesia**.
+- Precompiled firmware for the P4 main processor and the C5 wireless co-processor.
+- The board schematic and BSP API documentation.
+
+Useful entry points:
+
+| Resource | Description |
 | --- | --- |
-| I2C1 | SDA `GPIO7`，SCL `GPIO8`，板载 ES8311、GT911、背光和摄像头 SCCB 共用 |
-| ES8311 I2S | MCLK/BCLK/WS/DOUT/DIN：`GPIO13/12/10/9/11` |
-| 功放使能 | `GPIO53`，高电平打开 |
-| SDMMC 4-bit | CLK/CMD：`GPIO43/44`；D0-D3：`GPIO39/40/41/42` |
-| SD 卡电源 | `GPIO45`，低电平打开；SDMMC 使用片上 LDO 通道 4 |
-| ESP-Hosted SDIO | CLK/CMD/D0-D3/RESET：`GPIO18/19/14/15/16/17/54` |
-| LCD 背光 | I2C 地址 `0x45`，亮度寄存器 `0x96`，无独立背光 GPIO |
-| LCD 复位 | 未连接；GT911 复位和中断 GPIO 也未连接 |
+| [ESP-IDF BSP](./components/esp32_p4_nano_wifi6_db/) | Board initialization, display, touch, audio, storage, camera, and USB Host support |
+| [BSP Guide](./components/esp32_p4_nano_wifi6_db/README.md) | Pin assignments, panel profiles, and basic usage |
+| [BSP API](./components/esp32_p4_nano_wifi6_db/API.md) | BSP macros and public functions |
+| [ESP-IDF Examples](./examples/esp_idf/) | ESP-IDF peripheral and feature examples |
+| [Arduino Examples](./examples/Arduino/) | Arduino projects, board files, and examples |
+| [Hardware Schematic](./hardware/schematics/ESP32-P4-NANO-WIFI6-DB.pdf) | Development-board schematic |
+| [Official Documentation](https://docs.waveshare.net/ESP32-P4-NANO-WIFI6-DB/) | Waveshare hardware and software documentation |
 
-### MIPI-DSI 面板
+## Hardware Overview
 
-Nano BSP 默认使用 10.1 英寸 JD9365。支持的 BSP 面板如下，全部使用两条
-DSI data lane：
+| Feature | Device / Interface |
+| --- | --- |
+| Main processor | ESP32-P4; the ESP-IDF and Arduino target is **esp32p4** |
+| Wireless | ESP32-C5 wireless co-processor connected to ESP32-P4 through ESP-Hosted/SDIO |
+| Memory | 16 MB Flash; PSRAM is enabled by the Arduino board definition |
+| Display | External MIPI-DSI LCD with two DSI data lanes |
+| Touch | GT911 capacitive touch controller on the shared I2C bus, using polling |
+| Camera | MIPI-CSI interface; the Arduino camera example uses OV5647 |
+| Audio | ES8311 codec, one analog microphone input, and speaker output |
+| Storage expansion | microSD through 4-bit SDMMC |
+| Network | ESP32-C5 Wi-Fi co-processor and onboard Ethernet interface |
+| USB | USB Host |
+| Expansion | GPIO, I2C, UART, and CAN/TWAI expansion interfaces |
 
-| 面板 | 控制器 | 分辨率 | Lane 速率 |
+### Software Versions and Configuration
+
+| Item | Configuration |
+| --- | --- |
+| ESP-IDF BSP | Component version **0.0.1**; the manifest requires ESP-IDF **>=5.5** |
+| Arduino-ESP32 | **3.3.11** |
+| Arduino board | **Waveshare ESP32-P4-NANO-WIFI6-DB** |
+| Arduino Flash | 16 MB; default partition scheme **default_16MB** |
+| Arduino serial monitor | **115200** by default |
+
+### Key Hardware Resources
+
+| Function | Pins / Parameters | Notes |
+| --- | --- | --- |
+| Shared I2C | SDA **GPIO7**, SCL **GPIO8** | Shared by ES8311, GT911, LCD backlight, and camera SCCB |
+| ES8311 I2S | MCLK/BCLK/WS/DOUT/DIN: **GPIO13/12/10/9/11** | Audio input and output |
+| Amplifier enable | **GPIO53**, active high | Audio power-amplifier enable |
+| 4-bit SDMMC | CLK/CMD: **GPIO43/44**; D0-D3: **GPIO39/40/41/42** | SD-card power control is **GPIO45**, active low |
+| ESP-Hosted SDIO | CLK/CMD/D0-D3/RESET: **GPIO18/19/14/15/16/17/54** | Connected to the ESP32-C5 co-processor |
+| LCD backlight | I2C address **0x45**, register **0x96** | No dedicated backlight GPIO |
+| LCD reset | Not connected | Handled by the panel initialization flow |
+| GT911 reset / interrupt | Not connected | Touch data is polled over I2C |
+
+GPIO45 and GPIO53 are also used by the BSP for SD-card power and audio-amplifier control. Do not drive them as general-purpose GPIOs while the corresponding peripherals are active.
+
+### MIPI-DSI Panels
+
+The Nano BSP supports the following external Waveshare DSI touch panels. The default profile is the 10.1-inch JD9365. When switching panels, keep the controller, resolution, initialization commands, and DSI rate from the same profile.
+
+| Panel option | Controller | Resolution | DSI lane rate |
 | --- | --- | ---: | ---: |
-| Waveshare 5-DSI-TOUCH-A | HX8394 | 720×1280 | 700 Mbps |
-| Waveshare 7-DSI-TOUCH-A | ILI9881C | 720×1280 | 1000 Mbps |
-| Waveshare 8-DSI-TOUCH-A | JD9365 | 800×1280 | 1500 Mbps |
-| Waveshare 10.1-DSI-TOUCH-A | JD9365 | 800×1280 | 1500 Mbps |
+| Waveshare 5-DSI-TOUCH-A | HX8394 | 720 × 1280 | 700 Mbps |
+| Waveshare 7-DSI-TOUCH-A | ILI9881C | 720 × 1280 | 1000 Mbps |
+| Waveshare 8-DSI-TOUCH-A | JD9365 | 800 × 1280 | 1500 Mbps |
+| Waveshare 10.1-DSI-TOUCH-A | JD9365 | 800 × 1280 | 1500 Mbps |
 
-Arduino 的 `mipi_dsi` 和 `squareline_wifi_clock` 示例默认使用 8 英寸 JD9365；
-切换面板时，控制器、分辨率、初始化命令和 DSI 速率必须使用同一套 profile。
+## Quick Start
 
-## 目录结构
+### ESP-IDF
 
-```text
-firmware/esp32_p4_nano_wifi6_db/  ESP-IDF BSP 组件
-examples/Arduino/                 Arduino 示例、boards.txt 和 Nano variant
-examples/esp_idf/                 ESP-IDF 外设和功能示例
-```
+Install an ESP-IDF environment that satisfies the BSP requirement, then open an ESP-IDF terminal and enter an example directory. Start with the board-check example, which does not require an external display, camera, SD card, network, or audio codec:
 
-BSP 的接口、引脚和配置说明见
-[`firmware/esp32_p4_nano_wifi6_db/README.md`](./firmware/esp32_p4_nano_wifi6_db/README.md)
-以及 [`API.md`](./firmware/esp32_p4_nano_wifi6_db/API.md)。
-
-## Arduino 快速开始
-
-1. 安装 Arduino-ESP32 `3.3.11`。
-2. 将
-   `examples/Arduino/esp32/variants/waveshare_esp32_p4_nano_wifi6_db`
-   复制到 Arduino-ESP32 的 `variants` 目录。
-3. 将 `examples/Arduino/esp32/boards.txt` 中以
-   `waveshare_esp32_p4_nano_wifi6_db.` 开头的板卡条目合并到同版本的
-   `boards.txt`。该文件是完整快照；如果本地已经有其他板卡定义，不要直接覆盖。
-4. 重启 Arduino IDE，选择 `Waveshare ESP32-P4-NANO-WIFI6-DB`。
-5. 使用默认 `16M Flash` 分区方案和正确的串口。
-
-详细安装说明和示例索引见
-[`examples/Arduino/README.md`](./examples/Arduino/README.md)。可先运行
-`board_check`，再按需测试 GPIO、I2C、I2S、SDMMC、MIPI-DSI、MIPI-CSI 或
-SquareLine UI 示例。
-
-## ESP-IDF 快速开始
-
-在 ESP-IDF 终端中进入一个示例目录，以最小的板卡检查示例为例：
-
-```bash
+~~~bash
 cd examples/esp_idf/00_board_check
 idf.py set-target esp32p4
 idf.py build
 idf.py -p PORT flash monitor
-```
+~~~
 
-将 `PORT` 替换为实际串口，例如 Windows 下的 `COM7`。推荐的验证顺序是：
+Replace **PORT** with the serial port of the board, such as **COM7** on Windows. The recommended bring-up order is:
 
-1. `00_board_check`：确认 P4、Flash、PSRAM 和串口链路。
-2. `01_i2c_tools`：确认 GPIO7/GPIO8 和 I2C 总线。
-3. `02_sdmmc`：确认 microSD 和 4-bit SDMMC。
-4. `06_Displaycolorbar`：在 LVGL 或摄像头示例之前确认 LCD、DSI 时序和背光。
-5. `03_wifistation`：确认 ESP-Hosted、C5 无线协处理器、关联和 DHCP。
+1. **00_board_check**: verify the chip, Flash, PSRAM, and serial link.
+2. **01_i2c_tools**: verify the shared I2C bus on GPIO7/GPIO8.
+3. **02_sdmmc**: verify the microSD card and 4-bit SDMMC.
+4. **06_Displaycolorbar**: verify the actual LCD panel, MIPI-DSI timing, and backlight.
+5. **05_I2SCodec**: verify ES8311 audio input and output.
+6. **03_wifistation**: verify ESP-Hosted, the ESP32-C5 co-processor, Wi-Fi association, and DHCP.
 
-更多 ESP-IDF 示例位于 [`examples/esp_idf`](./examples/esp_idf)。
+### Arduino
 
-## 使用注意
+The Arduino examples are based on Arduino-ESP32 **3.3.11** and target ESP32-P4. The ESP32-C5 is managed as a wireless co-processor by ESP-Hosted; it is not the compilation target of the Arduino project.
 
-- I2C1 是共享总线。Arduino 示例分别使用 legacy I2C 或新版 `i2c_master`，不要
-  同时运行多个会重复初始化 I2C1 的示例。
-- GPIO45 和 GPIO53 分别由 SD 卡电源和音频功放使用；对应外设工作时不要将它们
-  当作普通 GPIO 驱动。
-- 摄像头、LCD、SD 卡和无线协处理器涉及供电、线缆和外部硬件条件。源码或编译
-  通过不等于已经完成硬件验证。
-- 不要把真实 Wi-Fi 密码、API key 或带凭据的日志提交到仓库或公开分享。
+1. Install Arduino-ESP32 **3.3.11**.
+2. Copy the directory **examples/Arduino/esp32/variants/waveshare_esp32_p4_nano_wifi6_db** to the **variants** directory of the matching Arduino-ESP32 installation.
+3. **examples/Arduino/esp32/boards.txt** is a complete boards.txt snapshot. Back up the original file first, then merge the entries beginning with **waveshare_esp32_p4_nano_wifi6_db.** instead of overwriting other board definitions.
+4. Restart Arduino IDE and select **Waveshare ESP32-P4-NANO-WIFI6-DB**.
+5. Select 16 MB Flash, the **default_16MB** partition scheme, PSRAM enabled, and the correct serial port.
+6. Select the panel profile that matches the connected LCD for display examples.
+
+## ESP-IDF Examples
+
+All examples are under [examples/esp_idf](./examples/esp_idf/). Each example has its own project configuration and README; some examples provide both English and Chinese documentation.
+
+| Example | Main function |
+| --- | --- |
+| [00_board_check](./examples/esp_idf/00_board_check/) | First-run check of the chip, Flash, PSRAM, and serial output |
+| [01_i2c_tools](./examples/esp_idf/01_i2c_tools/) | I2C bus scanning and interactive diagnostics |
+| [02_sdmmc](./examples/esp_idf/02_sdmmc/) | 4-bit SDMMC read/write test for microSD |
+| [03_wifistation](./examples/esp_idf/03_wifistation/) | Wi-Fi connection through the ESP32-C5 and ESP-Hosted |
+| [04_ethernetbasic](./examples/esp_idf/04_ethernetbasic/) | Ethernet link and IP initialization |
+| [05_I2SCodec](./examples/esp_idf/05_I2SCodec/) | ES8311 audio playback, capture, and loopback |
+| [06_Displaycolorbar](./examples/esp_idf/06_Displaycolorbar/) | MIPI-DSI LCD color-bar and backlight test |
+| [07_lvgl_demo_v9](./examples/esp_idf/07_lvgl_demo_v9/) | LVGL 9 graphical-interface demo |
+| [08_eth2ap](./examples/esp_idf/08_eth2ap/) | Ethernet-to-Wi-Fi access-point example |
+| [09_simple_video_server](./examples/esp_idf/09_simple_video_server/) | Camera streaming, image capture, and Web control |
+| [10_video_lcd_display](./examples/esp_idf/10_video_lcd_display/) | Camera video output to an LCD |
+| [11_usb_extend_screen](./examples/esp_idf/11_usb_extend_screen/) | USB extended-screen example |
+| [12_nvs_counter](./examples/esp_idf/12_nvs_counter/) | Boot-counter persistence with NVS |
+
+## Arduino Examples
+
+| Example | Main function |
+| --- | --- |
+| [board_check](./examples/Arduino/board_check/) | Print chip, Flash, PSRAM, and heap information |
+| [gpio](./examples/Arduino/gpio/) | Interactive GPIO test through serial commands |
+| [i2c](./examples/Arduino/i2c/) | Scan addresses on the shared I2C1 bus |
+| [i2s](./examples/Arduino/i2s/) | ES8311 single-microphone to single-speaker audio loopback |
+| [sdmmc](./examples/Arduino/sdmmc/) | 4-bit microSD file read/write test |
+| [mipi_dsi](./examples/Arduino/mipi_dsi/) | MIPI-DSI LCD color-bar and backlight test |
+| [mipi_csi](./examples/Arduino/mipi_csi/) | OV5647 camera live display on an MIPI-DSI LCD |
+
+mipi_dsi and mipi_csi default to the 10.1-inch JD9365 profile: 800 × 1280, RGB565, and two DSI lanes. For another LCD, select the matching JD9365, HX8394, or ILI9881C profile instead of reusing the default configuration.
+
+I2C1 is a shared bus. Different examples may use Arduino Wire1, the legacy I2C API, or the newer i2c_master API. Do not initialize the same bus more than once in one application; see the README of the selected example for details.
+
+## Firmware
+
+### Brookesia Firmware Source
+
+[firmware/brookesia](./firmware/brookesia/) contains the ESP-Brookesia application firmware source, including the GUI, settings, music player, video player, camera, and other application components.
+
+### Precompiled Firmware
+
+| File | Purpose |
+| --- | --- |
+| [ESP32-P4-NANO-WIFI6-DB-FactoryOnly-260623.bin](./firmware/bin/ESP32-P4-NANO-WIFI6-DB-FactoryOnly-260623.bin) | Factory firmware for the ESP32-P4 main processor |
+| [esp32-c5-slave-260623.bin](./firmware/bin/ESP32-C5/esp32-c5-slave-260623.bin) | Slave firmware for the ESP32-C5 wireless co-processor |
+
+The P4 and C5 firmware target different chips. Confirm the target chip, flash address, and firmware version before flashing. When rebuilding or replacing the C5 firmware, also confirm compatibility with the ESP-Hosted and remote Wi-Fi component versions used by the P4 project.
+
+## Repository Structure
+
+| Path | Purpose |
+| --- | --- |
+| [assert/](./assert/) | Product image used by the README |
+| [examples/esp_idf/](./examples/esp_idf/) | ESP-IDF peripheral and feature examples |
+| [examples/Arduino/](./examples/Arduino/) | Arduino examples, board files, and variant |
+| [components/esp32_p4_nano_wifi6_db/](./components/esp32_p4_nano_wifi6_db/) | Local Nano BSP component |
+| [firmware/brookesia/](./firmware/brookesia/) | Brookesia application firmware source |
+| [firmware/bin/](./firmware/bin/) | Precompiled P4 and C5 firmware |
+| [hardware/schematics/](./hardware/schematics/) | Board schematic |
+
+Generated files such as **build/**, **managed_components/**, and local **sdkconfig** files are not source files and should not be committed.
+
+## Related Documentation
+
+- [Documentation Index](./docs/README.md)
+- [Hardware Guide](./docs/en/hw-reference/user-guide-esp32-p4-nano-wifi6-db.md)
+- [BSP Guide](./components/esp32_p4_nano_wifi6_db/README.md)
+- [BSP API](./components/esp32_p4_nano_wifi6_db/API.md)
+- [Arduino Board Files](./examples/Arduino/esp32/README.md)
+- [Arduino Examples](./examples/Arduino/README.md)
+- [ESP-IDF Board Check README](./examples/esp_idf/00_board_check/README.md)
+- [Arduino MIPI-CSI README](./examples/Arduino/mipi_csi/README.md)
+- [Board Schematic](./hardware/schematics/ESP32-P4-NANO-WIFI6-DB.pdf)
+
+## Usage Notes
+
+- Display, touch, and camera functions depend on the external module, power supply, cables, and matching panel profile. A source or build result is not hardware validation.
+- I2C1 is shared by ES8311, GT911, the LCD backlight, and camera SCCB. For camera examples, also verify camera power and SCCB wiring.
+- GPIO45, GPIO53, SDIO, and MIPI pins have board-level multiplexing. Check the pin table and schematic before using expansion headers.
+- ESP32-P4 Wi-Fi depends on the ESP32-C5 slave firmware and the ESP-Hosted/SDIO link. Check compatibility when changing software on either side.
+- Do not commit real Wi-Fi passwords, API keys, or serial logs containing credentials.
+
+## License
+
+The Nano BSP and some additional components contain their own LICENSE files. Follow the license text in the corresponding directory when using or redistributing the files.
