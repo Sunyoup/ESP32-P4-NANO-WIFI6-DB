@@ -89,3 +89,133 @@ rev3.1만의 차이(카메라/ISP 쪽 하드웨어 기능)는 카메라를 써 �
 검증하지 못했다. 카메라 앱을 돌릴 때 다시 확인할 것.
 
 확인된 동작: Wi-Fi(C5 경유), 이더넷(DHCP), SD카드, avi 동영상 재생.
+
+
+########################################################################
+## 추가 기록 (2026-09-21): 카메라 PPA 보정, 병합 이미지, 백업, 검출 조사
+########################################################################
+
+
+== 카메라(OV5647) PPA 보정 (브랜치: camera-ppa-fix) ==
+
+증상
+ - HX8394 720x1280 portrait LCD에서 카메라를 정면으로 향해도 대상이 한참 옆으로
+   치우쳐 보였다. (hardware xy_swap 없음)
+
+원인 분석 (Camera.cpp / esp_cam_sensor 레지스터 분석)
+ - 720x1280 요청은 "input width=720, height=1280 is not supported"로 실패하고
+   800x1280 센서 모드로 폴백했다.
+ - 800x1280 센서 모드(ov5647_mipi_2lane_24Minput_800x1280_raw8_50fps.h)는
+   센서의 가로 2110 x 세로 1448 창(HSTA=512, VSTA=248)을 800x1280으로 내보낸다.
+   -> 창 중심이 센서 중심보다 오른쪽으로 약 255px 치우쳐 있고,
+      가로 약 2.6배 / 세로 약 1.1배로 비균등 압축된다.
+   -> 원래 800x1280 패널(10.1인치 JD9365)에 맞춘 모드라 720x1280 패널에는 안 맞는다.
+ - LCD-7B(1024x600 landscape)는 센서 landscape 프레임을 그대로 써서 문제가 없었다.
+   (factory 설정은 확인하지 못함)
+
+수정 내용
+ - sdkconfig.defaults: landscape 1280x960 (RAW10 binning, 45fps) 모드를 켜고 기본으로 지정
+   CONFIG_CAMERA_OV5647_MIPI_RAW10_1280X960_BINNING_45FPS=y
+   CONFIG_CAMERA_OV5647_MIPI_DEFAULT_FMT_RAW10_1280X960_BINNING_45FPS=y
+   (sdkconfig에도 FORMAT_INDEX_DEFAULT=4 로 반영)
+ - Camera.cpp: 1280x960을 먼저 요청하고, 실패하면 800x1280으로 폴백.
+   카메라 프레임과 패널의 방향이 다르면 PPA로 중앙 크롭 후 90도 회전
+   (1280x960 중앙 1280x720 -> 720x1280, 스케일 1.0).
+ - 조정 매크로 (Camera.cpp 상단)
+     CAMERA_PPA_ROTATE_ANGLE  기본 PPA_SRM_ROTATION_ANGLE_90 (PPA 회전은 반시계 기준)
+     CAMERA_PPA_MIRROR_X/Y    기본 0
+     CAMERA_CROP_ZOOM         기본 1.0 (1 이상, 중앙 기준 확대)
+     CAMERA_CROP_SHIFT_X/Y    크롭 창 이동(소스 프레임 픽셀, 회전 전 좌표)
+   * 소스 x 방향(회전 후 화면 세로)은 1280 전체를 쓰므로 이동 여유가 없다.
+     그 방향으로 옮기려면 ZOOM도 함께 올려야 한다. 소스 y 방향은 +-120px 여유.
+
+결과
+ - "Camera format: 1280x960" 로그로 새 모드 적용 확인.
+ - 회전은 카메라를 손으로 90도 돌려 맞추면 되고, 상하좌우 반전은 없었다.
+ - 광축 어긋남은 이전보다 훨씬 줄었다. 남은 어긋남은 160도 광각 모듈의
+   렌즈 조립 오차이거나 왜곡 때문에 중앙 판단이 어려운 것일 수 있다(확정 못 함).
+ - CAMERA_CROP_SHIFT_X=100 으로 좋아진 것 같으나 손으로 잡고 봐서 불확실하다.
+   커밋된 값은 100. 나중에 카메라를 고정하고 격자/눈금 같은 대상으로 다시 맞출 것.
+
+부수 발견: 카메라 케이블(FPC)을 뒤집어 꽂아 센서가 안 잡힌 적이 있다.
+ (증상: "read pid_h failed", "Get sensor ID failed", "Failed to detect camera sensor")
+
+
+== 병합 이미지 (0x0 기준) ==
+
+ - 만들기 (build 디렉터리에서):
+   esptool --chip esp32p4 merge-bin -o ../brookesia_firmware.bin @flash_args
+ - 크기 0xF20000 (약 15.1MB), 16MB 플래시에 들어감. storage(5MB)는 고정 크기라
+   mp3(spiffs/music/*.mp3 5개, 약 3.1MB)를 넣어도 이미지 크기는 변하지 않는다.
+   SPIFFS 사용 가능 용량은 약 4.8MB.
+ - 플래시: esptool --chip esp32p4 -p <포트> write-flash 0x0 brookesia_firmware.bin
+ - 이전 FactoryOnly-260623.bin 과는 파티션 레이아웃이 달라 섞어 쓰면 안 된다.
+ - 앱을 다시 빌드했으면 병합도 다시 할 것.
+
+
+== git 백업 (fork) ==
+
+ - 원격: origin = https://github.com/Sunyoup/ESP32-P4-NANO-WIFI6-DB (내 fork)
+         upstream = https://github.com/waveshareteam/ESP32-P4-NANO-WIFI6-DB (원본)
+ - 브랜치
+     brookesia-idf61-fixes : 부트로더/파티션/ESP-Hosted 핀/경고 예외/spiffs 폴더 수정
+     camera-ppa-fix        : 위 브랜치에서 갈라져 나온 카메라 PPA 보정
+ - 원본 업데이트 가져오기: git fetch upstream && git merge upstream/main
+ - 커밋되지 않는 것(.gitignore): sdkconfig, *.bin, *.log, build/, managed_components/,
+   spiffs/music/*.mp3. avi/ (변환한 동영상)도 커밋하지 않았다.
+ - 토큰은 채팅에 붙여넣지 말 것. gh auth login 또는 push 시 비밀번호 입력란 사용.
+
+
+== 동영상 재생 (VideoPlayer) ==
+
+ - SD카드의 /avi/ 폴더에서 MJPEG 코덱의 .avi만 재생한다 (mp4/H.264 불가).
+ - 변환 예: ffmpeg -i birds.mp4 -c:v mjpeg -q:v 3 -pix_fmt yuvj420p \
+                  -c:a pcm_s16le -ar 44100 birds.avi
+ - birds.mp4(432x240, H.264) 변환본은 약 8.6MB. 재생 확인함(원본에 소리 없음).
+ - 원본에 오디오(AAC)가 있으면 앱이 오디오를 재생하는지는 아직 확인하지 못했다.
+
+이더넷도 확인함: 링크업 후 DHCP로 IP를 받음. 메모리 여유 SRAM 약 347KB, PSRAM 약 22.9MB.
+
+
+== Face / Object Detection 조사 (조사만 함, 코드 없음) ==
+
+현황
+ - 이 저장소에는 얼굴/객체 검출 코드가 없다 (esp-dl, human_face_detect, yolo 등 검색 결과 없음,
+   managed_components 와 dependencies.lock 에도 없음).
+ - 카메라 관련 코드: Camera.cpp(프리뷰), 09_simple_video_server, 10_video_lcd_display.
+
+공식 구성
+ - esp-dl (v3.3.11): 추론 프레임워크(.espdl, 듀얼코어, PSRAM 메모리 계획).
+   추가: idf.py add-dependency "espressif/esp-dl^3.3.11"
+ - human_face_detect (v0.5.0): 얼굴 검출. 2단계(MSR+MNP) 또는 1단계(ESPDet-Pico 224/416).
+   ESP32-S3, ESP32-P4 지원. 모델은 플래시 또는 SD카드에 둘 수 있다.
+ - 그 외 모델: COCO 80클래스 검출(YOLO11n, YOLO26), 보행자, 손, 고양이/개, 손동작,
+   얼굴 인식, 포즈 등 대부분 P4 지원.
+ - esp-detection: 자체 데이터로 검출 모델을 학습해 esp-dl로 배포하는 도구.
+ - ESP-WHO: esp-dl 위의 얼굴 검출/인식 응용 프레임워크.
+ - P4 속도(esp-detection 문서): ESPDet-Pico 224x224 약 51ms(18fps 이상),
+   160x288 약 46ms, 416x416 약 202ms. (입력 해상도 기준, 카메라 해상도가 아님)
+
+이 프로젝트에 붙일 때 확인할 것
+ 1. IDF 6.1 호환: esp-dl 문서는 "release/v5.3 이상"이라고만 하고, 얼굴 검출 예제의
+    검증 목록에는 IDF 5.3, 5.4만 나온다. 6.1에서 빌드되는지 확인하지 못했다. 가장 먼저 시험할 것.
+ 2. P4 rev3.x: esp-dl 쪽 호환은 확인하지 못했다. (이 프로젝트는 REV_MIN_301)
+ 3. 입력 포맷: 프리뷰는 RGB565, 모델 입력은 보통 RGB888 계열. esp-dl 이미지 유틸이
+    RGB565를 직접 받는지 확인하지 못했다. 안 받으면 PPA로 변환+축소 단계가 필요.
+ 4. 화면 좌표: 프리뷰가 90도 회전과 크롭을 하므로 검출 박스 좌표 변환이 필요.
+ 5. 박스 그리기: 프리뷰는 LVGL을 멈추고 LCD 프레임버퍼에 직접 쓰는 구조(dummy draw)라
+    프레임버퍼에 직접 그려야 한다. 추론은 별도 태스크로 돌려야 프리뷰가 안 끊긴다.
+
+추천 순서(다음 작업, 새 브랜치에서)
+ 1. esp-dl + human_face_detect 를 의존성에 추가해 IDF 6.1 빌드가 되는지 확인
+ 2. 카메라 프레임을 PPA로 224x224 등으로 축소해 추론 태스크에 넘기는 최소 예제
+ 3. 검출 결과(박스)를 프리뷰 프레임버퍼에 그리기
+
+출처
+ - https://github.com/espressif/esp-dl
+ - https://github.com/espressif/esp-dl/tree/master/models
+ - https://components.espressif.com/components/espressif/esp-dl
+ - https://components.espressif.com/components/espressif/human_face_detect
+ - https://github.com/espressif/esp-detection
+ - https://github.com/espressif/esp-who
+ - https://developer.espressif.com/blog/2026/05/esp-who-get-started/
