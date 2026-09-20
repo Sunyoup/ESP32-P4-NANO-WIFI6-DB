@@ -23,6 +23,7 @@
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -70,6 +71,19 @@ LV_IMG_DECLARE(img_app_camera);
 #define CAMERA_PPA_MIRROR_Y 0
 #endif
 
+// Fine tuning for lens/sensor misalignment (e.g. wide-angle modules whose optical axis is off-center).
+// The shift is in source-frame pixels (before rotation) and moves the crop window; the zoom (>= 1.0)
+// shrinks the crop window around its center so there is room to shift along both axes.
+#ifndef CAMERA_CROP_ZOOM
+#define CAMERA_CROP_ZOOM 1.0f
+#endif
+#ifndef CAMERA_CROP_SHIFT_X
+#define CAMERA_CROP_SHIFT_X 0
+#endif
+#ifndef CAMERA_CROP_SHIFT_Y
+#define CAMERA_CROP_SHIFT_Y 0
+#endif
+
 #ifdef CONFIG_CAMERA_OV5647_MIPI_RAW8_800x1280_50FPS
 #define CAMERA_FALLBACK_CAPTURE_WIDTH  800
 #define CAMERA_FALLBACK_CAPTURE_HEIGHT 1280
@@ -88,6 +102,29 @@ namespace esp_brookesia::apps
         float scale_x;
         float scale_y;
     };
+
+    // Apply CAMERA_CROP_ZOOM / CAMERA_CROP_SHIFT_* to a centered cover crop, keeping the window inside the frame.
+    static void applyCropAdjust(CoverCropConfig &crop, uint32_t src_w, uint32_t src_h, uint32_t dst_w, uint32_t dst_h)
+    {
+        if (CAMERA_CROP_ZOOM <= 1.0f && CAMERA_CROP_SHIFT_X == 0 && CAMERA_CROP_SHIFT_Y == 0) {
+            return;
+        }
+
+        const float zoom = CAMERA_CROP_ZOOM > 1.0f ? CAMERA_CROP_ZOOM : 1.0f;
+        const uint32_t new_w = std::max<uint32_t>(static_cast<uint32_t>(crop.width / zoom), 1);
+        const uint32_t new_h = std::max<uint32_t>(static_cast<uint32_t>(crop.height / zoom), 1);
+        int32_t x = static_cast<int32_t>(crop.offset_x) + static_cast<int32_t>((crop.width - new_w) / 2) + CAMERA_CROP_SHIFT_X;
+        int32_t y = static_cast<int32_t>(crop.offset_y) + static_cast<int32_t>((crop.height - new_h) / 2) + CAMERA_CROP_SHIFT_Y;
+        x = std::clamp<int32_t>(x, 0, static_cast<int32_t>(src_w - new_w));
+        y = std::clamp<int32_t>(y, 0, static_cast<int32_t>(src_h - new_h));
+
+        crop.offset_x = x;
+        crop.offset_y = y;
+        crop.width = new_w;
+        crop.height = new_h;
+        crop.scale_x = static_cast<float>(dst_w) / static_cast<float>(new_w);
+        crop.scale_y = static_cast<float>(dst_h) / static_cast<float>(new_h);
+    }
 
     static CoverCropConfig computeCoverCrop(uint32_t src_w, uint32_t src_h, uint32_t dst_w, uint32_t dst_h)
     {
@@ -543,6 +580,7 @@ namespace esp_brookesia::apps
         const uint32_t fit_w = rotate ? display_h : display_w;
         const uint32_t fit_h = rotate ? display_w : display_h;
         CoverCropConfig crop = computeCoverCrop(_camera_width, _camera_height, fit_w, fit_h);
+        applyCropAdjust(crop, _camera_width, _camera_height, fit_w, fit_h);
 
         ppa_srm_oper_config_t srm_config = {};
         srm_config.in.buffer = _camera_buffers[v4l2_buf.index];
