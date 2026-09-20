@@ -47,6 +47,29 @@ LV_IMG_DECLARE(img_app_camera);
 #error "Unsupported BSP LCD color format"
 #endif
 
+// The OV5647 800x1280 sensor mode squeezes an off-center 2110x1448 window into a portrait frame, so on a
+// portrait LCD the preview looks shifted and distorted. Prefer a landscape sensor mode (undistorted, centered)
+// and let PPA crop + rotate it to the panel orientation instead.
+#ifdef CONFIG_CAMERA_OV5647_MIPI_RAW10_1280X960_BINNING_45FPS
+#define CAMERA_PREFERRED_CAPTURE_WIDTH  1280
+#define CAMERA_PREFERRED_CAPTURE_HEIGHT 960
+#else
+#define CAMERA_PREFERRED_CAPTURE_WIDTH  BSP_LCD_H_RES
+#define CAMERA_PREFERRED_CAPTURE_HEIGHT BSP_LCD_V_RES
+#endif
+
+// PPA rotation (counter-clockwise) and mirroring applied when the capture orientation differs from the panel's.
+// Adjust these if the preview appears rotated the wrong way or mirrored.
+#ifndef CAMERA_PPA_ROTATE_ANGLE
+#define CAMERA_PPA_ROTATE_ANGLE PPA_SRM_ROTATION_ANGLE_90
+#endif
+#ifndef CAMERA_PPA_MIRROR_X
+#define CAMERA_PPA_MIRROR_X 0
+#endif
+#ifndef CAMERA_PPA_MIRROR_Y
+#define CAMERA_PPA_MIRROR_Y 0
+#endif
+
 #ifdef CONFIG_CAMERA_OV5647_MIPI_RAW8_800x1280_50FPS
 #define CAMERA_FALLBACK_CAPTURE_WIDTH  800
 #define CAMERA_FALLBACK_CAPTURE_HEIGHT 1280
@@ -307,12 +330,12 @@ namespace esp_brookesia::apps
         // Prefer the panel size when the sensor supports it. Some camera modes are
         // fixed by Kconfig, so fall back to the known native capture mode and adapt
         // the preview to the LCD with PPA.
-        if (!set_capture_format(BSP_LCD_H_RES, BSP_LCD_V_RES)) {
+        if (!set_capture_format(CAMERA_PREFERRED_CAPTURE_WIDTH, CAMERA_PREFERRED_CAPTURE_HEIGHT)) {
             ESP_LOGW(
                 ESP_UTILS_LOG_TAG,
                 "VIDIOC_S_FMT %" PRIu32 "x%" PRIu32 " failed, trying fallback %" PRIu32 "x%" PRIu32,
-                static_cast<uint32_t>(BSP_LCD_H_RES),
-                static_cast<uint32_t>(BSP_LCD_V_RES),
+                static_cast<uint32_t>(CAMERA_PREFERRED_CAPTURE_WIDTH),
+                static_cast<uint32_t>(CAMERA_PREFERRED_CAPTURE_HEIGHT),
                 static_cast<uint32_t>(CAMERA_FALLBACK_CAPTURE_WIDTH),
                 static_cast<uint32_t>(CAMERA_FALLBACK_CAPTURE_HEIGHT)
             );
@@ -515,7 +538,11 @@ namespace esp_brookesia::apps
         uint8_t buffer_index = v4l2_buf.index % CONFIG_BSP_LCD_DPI_BUFFER_NUMS;
         const uint32_t display_w = BSP_LCD_H_RES;
         const uint32_t display_h = BSP_LCD_V_RES;
-        CoverCropConfig crop = computeCoverCrop(_camera_width, _camera_height, display_w, display_h);
+        // Rotate by 90 degrees when the camera frame and the panel have different orientations.
+        const bool rotate = (_camera_width > _camera_height) != (display_w > display_h);
+        const uint32_t fit_w = rotate ? display_h : display_w;
+        const uint32_t fit_h = rotate ? display_w : display_h;
+        CoverCropConfig crop = computeCoverCrop(_camera_width, _camera_height, fit_w, fit_h);
 
         ppa_srm_oper_config_t srm_config = {};
         srm_config.in.buffer = _camera_buffers[v4l2_buf.index];
@@ -535,11 +562,11 @@ namespace esp_brookesia::apps
         srm_config.out.block_offset_y = 0;
         srm_config.out.srm_cm = CAMERA_PPA_COLOR_MODE;
 
-        srm_config.rotation_angle = PPA_SRM_ROTATION_ANGLE_0;
+        srm_config.rotation_angle = rotate ? CAMERA_PPA_ROTATE_ANGLE : PPA_SRM_ROTATION_ANGLE_0;
         srm_config.scale_x = crop.scale_x;
         srm_config.scale_y = crop.scale_y;
-        srm_config.mirror_x = 0;
-        srm_config.mirror_y = 0;
+        srm_config.mirror_x = CAMERA_PPA_MIRROR_X;
+        srm_config.mirror_y = CAMERA_PPA_MIRROR_Y;
         srm_config.rgb_swap = 0;
         srm_config.byte_swap = 0;
         srm_config.mode = PPA_TRANS_MODE_BLOCKING;
