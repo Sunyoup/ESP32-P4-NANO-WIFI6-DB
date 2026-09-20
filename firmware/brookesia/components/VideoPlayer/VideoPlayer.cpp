@@ -37,6 +37,13 @@ LV_IMG_DECLARE(img_app_vedioplayer);
 #error "Unsupported BSP LCD color format"
 #endif
 
+// When the video and the panel have different orientations (e.g. landscape video on a portrait LCD), PPA rotates
+// the frame so the video fills the panel. The rotation is counter-clockwise; the viewer turns the device the
+// opposite way to see it upright. Use PPA_SRM_ROTATION_ANGLE_270 to rotate the other way.
+#ifndef VIDEO_PPA_ROTATE_ANGLE
+#define VIDEO_PPA_ROTATE_ANGLE PPA_SRM_ROTATION_ANGLE_90
+#endif
+
 namespace esp_brookesia::apps
 {
 
@@ -455,11 +462,16 @@ namespace esp_brookesia::apps
             return;
         }
 
+        // Fit the (possibly rotated) frame inside the panel, keeping the aspect ratio.
+        const bool rotate = (info.width > info.height) != (DISPLAY_WIDTH > DISPLAY_HEIGHT);
+        const uint32_t fit_src_w = rotate ? info.height : info.width;
+        const uint32_t fit_src_h = rotate ? info.width : info.height;
+
         uint32_t target_w = DISPLAY_WIDTH;
-        uint32_t target_h = (static_cast<uint64_t>(info.height) * DISPLAY_WIDTH) / info.width;
+        uint32_t target_h = (static_cast<uint64_t>(fit_src_h) * DISPLAY_WIDTH) / fit_src_w;
         if (target_h > DISPLAY_HEIGHT) {
             target_h = DISPLAY_HEIGHT;
-            target_w = (static_cast<uint64_t>(info.width) * DISPLAY_HEIGHT) / info.height;
+            target_w = (static_cast<uint64_t>(fit_src_w) * DISPLAY_HEIGHT) / fit_src_h;
         }
         if (target_w == 0) {
             target_w = 1;
@@ -470,8 +482,9 @@ namespace esp_brookesia::apps
 
         uint32_t offset_x = (DISPLAY_WIDTH - target_w) / 2;
         uint32_t offset_y = (DISPLAY_HEIGHT - target_h) / 2;
-        float scale_x = static_cast<float>(target_w) / static_cast<float>(info.width);
-        float scale_y = static_cast<float>(target_h) / static_cast<float>(info.height);
+        // PPA scale_x/scale_y apply to the source axes; with a 90/270 degree rotation they map to the output height/width.
+        float scale_x = static_cast<float>(rotate ? target_h : target_w) / static_cast<float>(info.width);
+        float scale_y = static_cast<float>(rotate ? target_w : target_h) / static_cast<float>(info.height);
 
         if (self->last_video_width != info.width || self->last_video_height != info.height) {
             ESP_LOGI(ESP_UTILS_LOG_TAG, "Scale video frame: %dx%d -> %ux%u, offset %u,%u",
@@ -500,7 +513,7 @@ namespace esp_brookesia::apps
         srm_config.out.block_offset_y = offset_y;
         srm_config.out.srm_cm = VIDEO_PPA_COLOR_MODE;
 
-        srm_config.rotation_angle = PPA_SRM_ROTATION_ANGLE_0;
+        srm_config.rotation_angle = rotate ? VIDEO_PPA_ROTATE_ANGLE : PPA_SRM_ROTATION_ANGLE_0;
         srm_config.scale_x = scale_x;
         srm_config.scale_y = scale_y;
         srm_config.mirror_x = 0;
