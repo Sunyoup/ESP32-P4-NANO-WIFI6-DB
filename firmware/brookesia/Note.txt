@@ -1,0 +1,91 @@
+ESP32-P4 rev3.1 + ESP-IDF 사용 시 주의사항 (Brookesia 빌드 작업 정리)
+
+오늘 작업에서 확인한 것과 확인하지 못한 것을 나눠서 정리한다.
+오늘 겪은 에러 중 rev3.1 때문이라고 확인된 것은 많지 않다.
+
+
+== rev3.1과 직접 관련된 것 (확인됨) ==
+
+1. 최소 칩 리비전 설정
+ - sdkconfig에 CONFIG_ESP32P4_REV_MIN_301=y, REV_MAX_FULL=399가 들어 있다.
+   이 이미지는 v3.1 이상 칩에서만 돈다.
+ - rev1.x나 2.x 보드에 그대로 올리면 부팅 단계에서 거부된다.
+   반대로 rev1.x용으로 빌드한 이미지는 v3.x에서 그대로 돌기도 하지만,
+   리비전 범위 설정을 확인할 것.
+ - 부트 로그에 "chip revision: v3.1"로 잘 나온다.
+
+2. 리비전 의존 기능이 라이브러리에서 갈라진다
+ - esp_video는 CONFIG_ESP32P4_REV_MIN_FULL >= 300일 때만 켜지는 기능이 있다
+   (esp_video_caps.h:70-76). 예를 들어 YUV422 short 스왑은
+   IDF 6.1 이상과 rev3.0 이상이 함께 필요하다.
+ - rev3.x는 ISP/CSI 쪽 하드웨어가 바뀐 부분이 있어서, 카메라 관련 코드는
+   IDF와 컴포넌트 버전을 맞춰 써야 한다.
+
+
+== rev3.1과 상관없이 오늘 겪은 것 (IDF와 라이브러리 버전 문제) ==
+
+3. IDF 스냅샷 함정 (가장 큰 함정)
+ - v6.1-dev 중간 스냅샷은 버전 번호가 6.1.0이어도 CSI 에러 이벤트 API가 없었고,
+   esp_video 2.5.0이 버전 번호만 보고 컴파일하다 실패했다.
+   (esp_cam_ctlr_error_event_data_t, on_error 없음)
+ - rev3.1 자체 문제는 아니지만, rev3.x는 최신 IDF 지원이 필요해서
+   개발 스냅샷을 쓰기 쉽다.
+ - 정식 릴리스(v6.1, v6.0.3 이상, v5.5.6 이상)를 쓸 것.
+
+4. 부트로더 크기 초과 (0x6060 > 0x6000)
+ - 96바이트 넘친 것이다. rev3.x 지원 코드 때문에 커졌을 가능성이 있다고
+   추측했지만 확인하지는 못했다. IDF 릴리스나 옵션에 따라서도 달라질 수 있다.
+ - 해결: partition table 오프셋을 0x10000으로 변경
+   (CONFIG_PARTITION_TABLE_OFFSET=0x10000), partitions.csv의 factory를
+   0x110000 -> 0x120000으로 이동.
+ - 파티션 레이아웃이 바뀌었으니 이전 병합 바이너리(FactoryOnly-*.bin)와
+   섞지 말 것. 처음 한 번은 idf.py erase-flash flash 권장 (NVS 데이터 삭제됨).
+
+
+== 보드(Nano) 특유의 함정 (칩 리비전과 무관) ==
+
+5. ESP-Hosted 핀 - 오늘 Wi-Fi가 안 된 진짜 원인
+ - sdkconfig.defaults의 CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD=y가
+   Function EV 보드 핀(CLK=33 CMD=4 D0=20 D1=23 D2=21 D3=22 RESET=53)으로
+   자동 설정했다.
+ - Nano 보드는 CLK/CMD/D0-D3/RESET = GPIO18/19/14/15/16/17/54.
+   P4_DEV_BOARD_NONE=y로 바꾸고 핀을 직접 지정했다.
+ - sdkconfig가 sdkconfig.defaults보다 우선하므로 두 파일 모두 고쳤다.
+ - 증상: sdmmc_card_init failed 반복 -> esp_wifi_init failed: ESP_FAIL
+
+6. esp-hosted 버전 불일치
+ - host 3.0.7, C5 2.12.9로 메이저가 달라 호환 모드(RPC V2, streaming)로
+   동작한다. 동작은 하지만 새 IDF/컴포넌트를 받으면 다시 어긋날 수 있다.
+ - 저장소의 firmware/bin/ESP32-C5/esp32-c5-slave-260623.bin도 2.12.9라서
+   플래시해도 mismatch는 해결되지 않는다.
+   (Waveshare esp-hosted-mcu 2.12.x 기준, IDF v5.5.4, network_adapter)
+ - 해결하려면 P4의 esp_hosted를 ~2.12.9로 고정하거나 C5를 3.x 슬레이브로
+   직접 빌드해야 한다. 현재는 그대로 사용 중(Wi-Fi 정상).
+
+7. 그 외
+ - GCC 신버전이 stringop-truncation을 에러로 처리해서 esp-audio-player에만
+   예외를 줬다. (CMakeLists.txt에서 -Wno-error=stringop-truncation)
+ - spiffs/ 폴더는 git에 없으므로 클론 후 spiffs/music/을 만들어야 한다.
+   (main/CMakeLists.txt:35의 spiffs_create_partition_image가 필요로 함)
+ - SD카드를 꽂지 않으면 "Failed to mount SD card" 에러가 난다.
+ - VideoPlayer는 SD카드의 /avi/ 폴더에서 MJPEG 코덱의 .avi 파일만 재생한다.
+   mp4/H.264는 안 된다. 변환 예:
+   ffmpeg -i in.mp4 -c:v mjpeg -q:v 3 -pix_fmt yuvj420p -c:a pcm_s16le -ar 44100 out.avi
+
+
+== 빌드할 때 일반적으로 챙길 것 ==
+
+ - IDF를 바꾸면 rm -rf build 할 것.
+ - sdkconfig가 sdkconfig.defaults보다 우선하므로, 옵션을 바꿀 때는 둘 다 고치거나
+   sdkconfig를 지우고 다시 생성해야 한다.
+ - 새 IDF에서는 dependencies.lock이 다시 풀리면서 컴포넌트 버전이 바뀔 수 있으니,
+   잘 되는 시점의 락 파일은 커밋해 둘 것.
+
+
+== 정리 ==
+
+오늘 문제 대부분은 rev3.1 자체가 아니라 IDF 스냅샷과 보드 핀 설정에서 왔다.
+rev3.1만의 차이(카메라/ISP 쪽 하드웨어 기능)는 카메라를 써 보지 않아서
+검증하지 못했다. 카메라 앱을 돌릴 때 다시 확인할 것.
+
+확인된 동작: Wi-Fi(C5 경유), 이더넷(DHCP), SD카드, avi 동영상 재생.

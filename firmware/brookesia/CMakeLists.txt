@@ -5,3 +5,7 @@
 cmake_minimum_required(VERSION 3.5)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(esp-brookesia)
+
+# chmorgan/esp-audio-player triggers -Wstringop-truncation with newer GCC; don't fail the build on it
+idf_component_get_property(audio_player_lib chmorgan__esp-audio-player COMPONENT_LIB)
+target_compile_options(${audio_player_lib} PRIVATE -Wno-error=stringop-truncation)
