@@ -78,7 +78,7 @@ LV_IMG_DECLARE(img_app_camera);
 #define CAMERA_CROP_ZOOM 1.0f
 #endif
 #ifndef CAMERA_CROP_SHIFT_X
-#define CAMERA_CROP_SHIFT_X 0
+#define CAMERA_CROP_SHIFT_X 100
 #endif
 #ifndef CAMERA_CROP_SHIFT_Y
 #define CAMERA_CROP_SHIFT_Y 0
