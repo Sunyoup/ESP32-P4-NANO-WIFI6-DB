@@ -57,7 +57,8 @@ namespace esp_brookesia::apps
         // Time sync is started lazily after Wi-Fi obtains an IP address, which avoids
         // SNTP retries before the network stack is ready.
         esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-        esp_sntp_setservername(0, "ntp.aliyun.com");
+        esp_sntp_setservername(0, "kr.pool.ntp.org");
+        esp_sntp_setservername(1, "time.google.com");
         esp_sntp_set_time_sync_notification_cb(time_sync_notification_cb);
         esp_sntp_init();
         s_time_sync_started = true;

@@ -100,3 +100,6 @@ CONFIG_PARTITION_TABLE_OFFSET=0x10000
 # OV5647: landscape 1280x960 mode; Camera app crops and rotates it with PPA for portrait panels
 CONFIG_CAMERA_OV5647_MIPI_RAW10_1280X960_BINNING_45FPS=y
 CONFIG_CAMERA_OV5647_MIPI_DEFAULT_FMT_RAW10_1280X960_BINNING_45FPS=y
+
+# Two NTP servers are used by the Settings app (kr.pool.ntp.org, time.google.com)
+CONFIG_LWIP_SNTP_MAX_SERVERS=2
