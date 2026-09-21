@@ -255,3 +255,152 @@ PPA 회전 시 스케일 규칙 (esp-idf esp_driver_ppa/src/ppa_srm.c:234-239)
 
 상태
  - 빌드 성공. 화면에서의 확인(꽉 차는지, 회전 방향)은 사용자가 보드에서 확인할 것.
+
+
+########################################################################
+## 추가 기록 (2026-09-21 오후): 재빌드, 동영상/음악/음량, AI 에이전트 조사, 하드웨어 주의사항
+########################################################################
+
+
+== 깨끗한 재빌드 / dependencies.lock ==
+
+ - dependencies.lock 은 .gitignore 대상이라 git으로 복구할 수 없다.
+ - AI 프레임워크를 시도하면서 락 파일에 esp-sr, esp_coze, gmf_* 가 들어갔고,
+   esp-sr 가 esp-dsp <=1.5.0 으로 제한해서 esp-dsp 1.4.12 로 고정되었다.
+   이 버전은 IDF 6.1에서 std::cos 컴파일 에러가 난다(<cmath> 누락).
+ - 해결: rm -rf build managed_components dependencies.lock 후 idf.py build.
+   esp-dsp 1.8.2 로 풀렸고 빌드 성공. sdkconfig 는 지우지 않아도 된다.
+ - 클린 빌드 후 esp_video 는 2.6 계열(esp_cam_sensor 2.6.*)로 풀렸을 수 있다.
+   카메라/Wi-Fi/동영상은 그대로 동작함을 확인했다.
+
+
+== 병합 이미지 다시 만들기 ==
+
+ - 앱/스토리지를 다시 빌드하면 병합도 다시 할 것:
+   cd build && esptool --chip esp32p4 merge-bin -o ../brookesia_firmware.bin @flash_args
+ - 0xF20000 바이트(약 15.1MB), 0x0 기준. storage 에 mp3 가 들어간 상태로 만든다.
+
+
+== VideoPlayer: AVI 변환 결함과 앱 동작 ==
+
+ - SD카드의 raw .mjpeg(480x320, 프레임레이트 정보 없음)를 avi로 바꿀 때
+   ffmpeg -f mjpeg -framerate 25 -i in.mjpeg -c:v copy out.avi 로 하면
+   AVI 헤더가 50fps 로 잡히고 25프레임마다 크기 0인 빈 00dc 청크가 끼어든다.
+   (예: 480320.avi 는 7936 청크 중 3968개가 빈 청크. birds.avi 는 0개.)
+   VideoPlayer 가 빈 프레임을 JPEG 디코더에 그대로 넘기므로 재생이 이상해진다.
+ - 올바른 변환 (프레임 복제 방지, 25fps):
+   ffmpeg -f mjpeg -framerate 25 -i in.mjpeg -c:v copy -an -fps_mode passthrough -r 25 out.avi
+   확인: us_per_frame=40000, avih total_frames = 실제 프레임 수, 빈 청크 0개.
+ - 확인 스크립트 아이디어: avi 의 movi 리스트를 따라가며 00dc 청크 크기가 0인 것을 센다.
+ - 앱 동작 (components/VideoPlayer/VideoPlayer.cpp)
+     * /sdcard/avi 의 .avi 를 모두 나열, 용량 제한 없음.
+     * 파일 선택 UI 없음. 디렉터리 순서대로 하나씩 끝까지 재생하고 끝나면 처음부터 반복.
+     * 오디오 재생 안 함 (avi_player_config 의 audio_cb = nullptr). 스와이프는 종료 용도.
+ - SD카드 avi/ 의 480320.avi, ABC.avi, my0.avi 는 위 방법으로 다시 만들었고 재생 확인함(소리는 원래 없음).
+ - raw .mjpeg 는 프레임레이트 정보가 없어 25fps 로 가정했다.
+
+
+== MusicPlayer: mp3 5개 중 2개만 재생되던 문제 (브랜치: musicplayer-track-fix) ==
+
+원인 (LVGL 음악 데모 코드가 그대로 남아 있었음)
+ - lv_demo_music_list.c: if(track_id >= 3) 이면 항목을 DISABLED 로 만든다.
+   -> 목록의 앞 3개만 클릭된다.
+ - lv_demo_music_main.h: ACTIVE_TRACK_CNT 가 3 으로 고정 -> 다음/이전 곡도 3개만 순환.
+ - file_iterator(chmorgan esp-file-iterator)는 디렉터리의 모든 항목을 필터 없이 나열한다.
+   .gitkeep 이 맨 앞(0번)에 들어가 3개 슬롯 중 하나를 차지했다.
+   => .gitkeep(0), BGM 1(1), BGM 2(2) 만 선택 가능, 나머지 3곡은 회색.
+ - mp3 파일 자체는 문제없다 (5개 모두 정상 MP3, 44.1kHz, 모노/스테레오).
+   SPIFFS 이미지에도 5개가 모두 들어 있다.
+
+수정
+ - lv_demo_music_get_track_cnt() 추가(최소 1). ACTIVE_TRACK_CNT 를 이것으로 교체.
+ - 비활성 처리 대상을 "실제 파일 뒤에 붙는 데모용 가짜 항목"으로 변경.
+ - .gitkeep 을 spiffs/music/ 에서 spiffs/ 로 이동. 삭제하면 mp3 가 .gitignore 대상이라
+   새로 받은 저장소에서 spiffs/ 폴더가 없어져 빌드 에러가 다시 난다.
+   spiffs/.gitkeep 은 SPIFFS 이미지의 루트(/.gitkeep)에 들어가고 /music 목록에는 안 나온다.
+ - 목록 아래의 회색 가짜 항목("Waiting for true love" 등)은 원래 동작이라 그대로 뒀다.
+ - 스토리지 이미지가 바뀌므로 storage 파티션까지 다시 플래시할 것.
+
+
+== 부팅 시 음량 100% ==
+
+ - components/bsp_extra/include/bsp_board_extra.h 의 CODEC_DEFAULT_VOLUME 80 -> 100.
+ - main.cpp 가 부팅 때 bsp_extra_codec_volume_set(CODEC_DEFAULT_VOLUME) 를 호출하고,
+   Settings 의 소리 슬라이더는 bsp_extra_codec_volume_get() 으로 초기값을 읽는다.
+ - Settings 에서 바꾼 음량은 저장되지 않아 재부팅하면 항상 100 으로 돌아온다.
+ - 100% 는 이어폰/스피커에 따라 매우 클 수 있다.
+
+
+== AI 에이전트 조사 (결론: 빌드하지 않기로 함) ==
+
+Brookesia 의 AI 프레임워크 (ai_framework/agent, Coze 기반) 시도
+ - 구성: esp_coze(Coze 서버), GMF 오디오 파이프라인, esp-sr(웨이크워드/AFE).
+   UI 는 phone 시스템이 아니라 speaker 시스템(esp_brookesia_speaker_ai_buddy)에서 쓴다.
+   지금 main.cpp 는 phone 시스템이라 빌드가 되더라도 화면에 앱으로 나타나지 않는다.
+ - 이 프로젝트에서는 의존성이 일부러 제거되어 있었다
+   (brookesia_core/idf_component.yml 주석 "omitted for this factory build").
+ - 원본 esp-brookesia release/v0.6 의 의존성(esp_coze ^0.6, gmf_core/gmf_ai_audio/gmf_io/
+   gmf_misc/gmf_audio ^0.6, esp_audio_simple_player 0.9.3, esp_websocket_client ^1.2.3)을
+   다시 넣으면 의존성 해석은 통과한다. 이후 IDF 6.1 과 안 맞는 부분이 연속으로 나왔다.
+     1) esp-sr 2.0.3, esp_coze 가 IDF 6.x 에서 없어진 'json' 컴포넌트를 요구 (-> espressif__cjson)
+     2) esp-dsp 1.4.12 에 <cmath> 누락 (esp-sr 가 <=1.5.0 으로 제한, 1.5.0 은 존재하지 않음)
+     3) esp_coze 의 switch 가 IDF 6.1 의 새 HTTP 이벤트를 처리 안 함 (-Wno-error=switch)
+     4) gmf_io 가 driver/i2s_pdm.h 를 못 찾음 (IDF 6 의 driver 분리, esp_driver_i2s 필요)
+     5) audio_processor.c:253 이 esp_gmf_trigger_wakeup 을 호출하는데 gmf_ai_audio 0.6.2 에 없음
+        -> 진짜 API 불일치. 미해결.
+ - 1,2,4는 managed_components 를 직접 고친 것이라 다시 받으면 사라진다.
+ - 브랜치 ai-agent-build 는 삭제했다 (push 한 적 없음).
+
+Waveshare ESP32-P4-WIFI6-Touch-LCD-7B factory 펌웨어의 ai-agent 는 다른 것이다
+ - factory 바이너리(32MB) 문자열 분석: 'coze' 0건. 대신 XiaoZhi(小智) AI 클라이언트로 보이는 코드
+   (api.tenclass.net/xiaozhi/ota/, MqttProtocol/WebsocketProtocol, 웨이크워드 nihaoxiaozhi,
+   esp-sr WakeNet9)가 들어 있고, 같은 바이너리에 Brookesia phone 시스템 코드도 있다.
+ - 7B GitHub 의 firmware/brookesia 소스는 다른 세대(IDF 5.5.0, esp-brookesia 0.4.*,
+   esp_video 0.8.*)이고 앱은 calculator/camera/game_2048/music_player/setting/video_player 뿐이다.
+   ai-agent 앱은 소스에 없다. 그러므로 그 저장소로는 factory 의 AI 에이전트를 다시 빌드할 수 없다.
+ - 7B 소스에는 human_face_detect, pedestrian_detect, product_audio 컴포넌트(모델 포함)가 들어 있다.
+   얼굴/보행자 검출 구현 예로 참고할 수 있다.
+ - XiaoZhi 는 별도 오픈소스(78/xiaozhi-esp32, 최신 릴리스 v2.5.0)이고 이 보드용 설정이 있다:
+   main/boards/waveshare/esp32-p4-nano. 빌드 이름 esp32-p4x-nano-10.1-a 가 P4X(rev3)용이다.
+   다만 10.1인치 JD9365 + OV5647 기준이고 HX8394 는 지원 목록에 없다. 독립 음성비서 펌웨어라
+   Brookesia 앱들과 한 화면에 합쳐지지 않는다. 필요 없어서 진행하지 않았다.
+
+
+== 하드웨어 조립 주의사항 (GND) ==
+
+ - Nano 보드 + 5인치 HX8394 LCD + 라즈베리파이용 프로토타입 쉴드(드릴 가공)를 M2.5 나사로
+   조립하면 세 보드의 GND 가 나사 구멍을 통해 연결될 수 있다.
+ - GND 끼리 묶이는 것 자체는 원래 하나의 시스템이라 정상이다. LCD 구멍은 전원 GND 와 연결되어 있다.
+   Nano 보드의 구멍이 GND 인지는 확인하지 못했다(회로도는 텍스트 추출로는 판독 불가).
+ - 위험한 경우: 구멍/패드가 GND 가 아니라 5V/3.3V 등에 연결된 경우, 프로토타입 쉴드의 전원 레일이 구멍 근처에
+   있는 경우, 드릴 가공으로 생긴 구리 조각/버가 인접 패드와 이어진 경우, 금속 스탠드오프가 다른 곳에 닿는 경우.
+ - 점검(전원 OFF, 나사 조립 상태): 구멍-GND 도통, 5V-GND / 3.3V-GND 단락 여부, 나사 주변 패드 육안 확인.
+   전원을 켠 뒤에는 5V 레일이 약 5V 인지, 뜨거운 부분이 없는지 확인.
+ - 결과: GPIO-GND 단락 없음, 발열 없음, 지금까지 정상 동작. 재조립할 때 스탠드오프가
+   다른 패드에 닿지 않는지만 다시 볼 것.
+
+
+== PoE HAT 사용 시 주의사항 ==
+
+ - 보드에 "PoE 모듈 전원 / 외부 5V 입력" 커넥터와 PoE 모듈 커넥터가 있다. RJ45 는 PoE 지원 자석(HBJ-6117ANL).
+ - 문서/회로도로는 USB 5V 와 PoE 5V 사이의 전원 선택(ORing)이 있는지 확인하지 못했다.
+   같은 Waveshare 의 ESP32-P4-ETH 는 USB 와 PoE 동시 사용이 가능하다고 하고, ESP32-S3 ETH POE 는
+   동시 연결 금지 경고가 있다. Nano 는 알 수 없다.
+ - 위험: ORing 이 없으면 두 5V 가 맞물려 PoE 전압이 USB(PC 포트)로 역류하거나, 반대로 USB 5V 가
+   PoE 모듈 출력으로 들어가 PC USB 포트나 PoE 모듈이 손상될 수 있다.
+ - 확인 방법(동시에 꽂기 전에 멀티미터로):
+     1) PoE 만 연결, USB 는 뺀 상태에서 USB-C 커넥터 VBUS 전압 측정: 약 5V 면 역류 구조 -> PoE 를 켠 채
+        PC 를 연결하면 안 됨. 0V 근처면 격리됨.
+     2) USB 만 연결, PoE 랜선은 뺀 상태에서 PoE 모듈 커넥터의 5V 핀 전압 측정: 5V 가 나오면 USB 5V 가
+        PoE 모듈 쪽으로 들어가는 구조.
+ - 동시에 꽂아 봤는데 이상은 없었다. 그러나 그것만으로 격리가 있다고 단정할 수 없어서
+   둘 중 하나만 쓰기로 했다: 개발할 때는 USB, 단독 동작 때는 PoE.
+ - PoE 를 쓰면서 시리얼 로그만 보려면 VBUS 를 차단한 USB 데이터 전용 케이블을 쓰는 방법이 있다.
+
+
+== 브랜치 구조 (fork: origin) ==
+
+ - brookesia-idf61-fixes -> camera-ppa-fix -> videoplayer-ppa-rotate -> musicplayer-track-fix 순으로 이어진다.
+   (musicplayer-track-fix 에는 위 모든 수정이 들어 있다. 음량 100% 커밋 포함.)
+ - 커밋되지 않는 것: avi/ (변환한 동영상), sdkconfig, *.bin, *.log, build/, managed_components/,
+   dependencies.lock, spiffs/music/*.mp3
