@@ -21,7 +21,7 @@ extern "C" {
  *      DEFINES
  *********************/
 
-#define ACTIVE_TRACK_CNT    3
+#define ACTIVE_TRACK_CNT    lv_demo_music_get_track_cnt()
 
 /**********************
  *      TYPEDEFS

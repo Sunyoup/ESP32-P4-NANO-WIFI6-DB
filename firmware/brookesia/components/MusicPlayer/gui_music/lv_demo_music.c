@@ -155,6 +155,11 @@ void lv_demo_music_close(void)
     lv_obj_set_style_bg_color(lv_scr_act(), original_screen_bg_color, 0);
 }
 
+uint32_t lv_demo_music_get_track_cnt(void)
+{
+    return active_track_cnt ? active_track_cnt : 1;
+}
+
 const char *lv_demo_music_get_title(uint32_t track_id)
 {
     if (_file_iterator == NULL)

@@ -175,7 +175,7 @@ static lv_obj_t * add_list_button(lv_obj_t * parent, uint32_t track_id)
     lv_obj_add_style(btn, &style_button_dis, LV_STATE_DISABLED);
     lv_obj_add_event_cb(btn, btn_click_event_cb, LV_EVENT_CLICKED, NULL);
 
-    if(track_id >= 3) {
+    if(track_id >= lv_demo_music_get_track_cnt()) {
         lv_obj_add_state(btn, LV_STATE_DISABLED);
     }
 
