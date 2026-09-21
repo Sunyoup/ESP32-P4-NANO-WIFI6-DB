@@ -42,10 +42,10 @@ namespace esp_brookesia::apps
     static void time_sync_notification_cb(struct timeval *tv)
     {
         (void)tv;
-        setenv("TZ", "CST-8", 1);
+        setenv("TZ", "KST-9", 1);
         tzset();
         s_time_synced = true;
-        ESP_UTILS_LOGI("SNTP time synced, timezone CST-8 applied");
+        ESP_UTILS_LOGI("SNTP time synced, timezone KST-9 applied");
     }
 
     static void start_time_sync_once()
