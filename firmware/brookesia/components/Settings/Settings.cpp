@@ -69,7 +69,8 @@ namespace esp_brookesia::apps
         (void)arg;
         (void)event_data;
 
-        if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        // Start SNTP once, as soon as either Wi-Fi (STA) or Ethernet gets an IP address.
+        if (event_base == IP_EVENT && (event_id == IP_EVENT_STA_GOT_IP || event_id == IP_EVENT_ETH_GOT_IP)) {
             start_time_sync_once();
         }
     }
@@ -417,7 +418,23 @@ namespace esp_brookesia::apps
                 ESP_UTILS_LOGE("Register time sync event handler failed: %s", esp_err_to_name(ret));
                 return ret;
             }
+            ret = esp_event_handler_register(
+                IP_EVENT,
+                IP_EVENT_ETH_GOT_IP,
+                &wifi_time_event_handler,
+                nullptr);
+            if (ret != ESP_OK) {
+                ESP_UTILS_LOGE("Register Ethernet time sync event handler failed: %s", esp_err_to_name(ret));
+                return ret;
+            }
             time_event_handler_registered = true;
+
+            // Ethernet may already have an IP address if it came up before this handler was registered.
+            esp_netif_t *eth_netif = esp_netif_get_handle_from_ifkey("ETH_DEF");
+            esp_netif_ip_info_t eth_ip_info = {};
+            if (eth_netif && esp_netif_get_ip_info(eth_netif, &eth_ip_info) == ESP_OK && eth_ip_info.ip.addr != 0) {
+                start_time_sync_once();
+            }
         }
 
         esp_err_t ret = esp_wifi_set_mode(WIFI_MODE_STA);
