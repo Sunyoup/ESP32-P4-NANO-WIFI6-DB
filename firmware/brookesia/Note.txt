@@ -404,3 +404,40 @@ Waveshare ESP32-P4-WIFI6-Touch-LCD-7B factory 펌웨어의 ai-agent 는 다른 �
    (musicplayer-track-fix 에는 위 모든 수정이 들어 있다. 음량 100% 커밋 포함.)
  - 커밋되지 않는 것: avi/ (변환한 동영상), sdkconfig, *.bin, *.log, build/, managed_components/,
    dependencies.lock, spiffs/music/*.mp3
+
+
+########################################################################
+## 추가 기록 (2026-09-22): 시간대(KST) / 이더넷 시간 동기화 / NTP 서버 (브랜치: timezone-fix)
+########################################################################
+
+증상
+ - Settings 앱에서 Wi-Fi 를 연결하면 잠시 뒤 메인 화면 상단 시계가 맞춰지는데 한 시간 느리게 표시됨.
+ - 이더넷만 연결했을 때는 시각이 맞춰지지 않음.
+
+원인 (components/Settings/Settings.cpp)
+ - SNTP 동기화가 끝나면 time_sync_notification_cb 에서 setenv("TZ", "CST-8", 1) 를 호출한다.
+   CST-8 은 중국 표준시(UTC+8). 한국(KST)은 UTC+9 라서 한 시간 느리게 나왔다.
+   (Waveshare 예제가 중국 기준으로 작성된 것으로 보임. NTP 서버는 UTC 시간만 주므로 시간대 문자열이 원인.)
+ - SNTP 시작을 IP_EVENT_STA_GOT_IP(Wi-Fi IP 획득) 이벤트에만 걸어 두었다.
+   이더넷은 IP_EVENT_ETH_GOT_IP 라는 다른 이벤트를 써서 이더넷만 연결하면 SNTP 가 시작되지 않았다.
+
+수정
+ - TZ 를 "KST-9" 로 변경 (로그 메시지도 "timezone KST-9 applied").
+ - wifi_time_event_handler 가 IP_EVENT_STA_GOT_IP 와 IP_EVENT_ETH_GOT_IP 둘 다 받아 SNTP 를 한 번만 시작.
+   (start_time_sync_once 가 이미 시작됐으면 무시)
+ - 핸들러 등록 직후 이더넷 netif("ETH_DEF")에 이미 IP 가 있으면 바로 시작
+   (설정 앱이 등록되기 전에 이더넷이 먼저 IP 를 받는 경우 대비).
+ - NTP 서버를 두 개로: 0번 kr.pool.ntp.org, 1번 time.google.com (기존 ntp.aliyun.com 제거).
+   CONFIG_LWIP_SNTP_MAX_SERVERS 를 1 -> 2 로 올림. esp_sntp_setservername(idx, ...) 의 idx 가
+   이 값 미만이어야 하므로 서버를 더 쓰려면 이 값도 올려야 한다(범위 1~16).
+   sdkconfig 와 sdkconfig.defaults 둘 다 반영. (sdkconfig 가 우선)
+ - SNTP 재동기화 주기: CONFIG_LWIP_SNTP_UPDATE_DELAY=3600000 (1시간).
+
+결과
+ - Wi-Fi, 이더넷 둘 다 시각 맞추기 정상. 한국 시각으로 표시됨.
+ - 한쪽 NTP 서버가 응답하지 않을 때 다른 서버로 넘어가는 동작은 직접 막아 보며 확인하지는 않았다.
+ - 시간대 설정은 동기화가 끝난 뒤에 적용된다. 동기화 전에는 UTC 기준으로 보일 수 있다.
+
+브랜치 구조 갱신
+ - brookesia-idf61-fixes -> camera-ppa-fix -> videoplayer-ppa-rotate -> musicplayer-track-fix -> timezone-fix
+   (timezone-fix 에는 위 모든 수정이 들어 있다.)
