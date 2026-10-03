@@ -211,7 +211,7 @@ void bsp_sdcard_get_sdmmc_host(const int slot, sdmmc_host_t *config)
     assert(config);
     sdmmc_host_t host_config = SDMMC_HOST_DEFAULT();
     host_config.slot = slot;
-    host_config.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
+    host_config.max_freq_khz = SDMMC_FREQ_DEFAULT;
 #if SOC_SDMMC_IO_POWER_EXTERNAL
     host_config.pwr_ctrl_handle = s_sdcard_pwr_ctrl;
 #endif

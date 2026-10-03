@@ -16,12 +16,54 @@
 #include "bsp_board_extra.h"
 #include "gui_music/lv_demo_music.h"
 #include "gui_music/lv_demo_music_main.h"
+#include <dirent.h>
 
-#define MUSIC_DIR BSP_SPIFFS_MOUNT_POINT "/music"
+#define MUSIC_DIR BSP_SD_MOUNT_POINT "/music"
 
 LV_IMG_DECLARE(img_app_musicplayer);
 
 static const char *TAG = "MusicPlayer";
+
+static bool sd_card_ready(void)
+{
+    // VideoPlayer may already have mounted the card, and mounting it twice fails
+    DIR *dir = opendir(BSP_SD_MOUNT_POINT);
+    if (dir) {
+        closedir(dir);
+        return true;
+    }
+    return bsp_sdcard_mount() == ESP_OK;
+}
+
+static void next_track_async(void *arg)
+{
+    LV_UNUSED(arg);
+    lv_demo_music_album_next(true);
+}
+
+// Called from the audio task for every player event. Only the IDLE event means
+// the file really ended; the LVGL part runs later in the GUI task.
+static void audio_event_cb(audio_player_cb_ctx_t *ctx)
+{
+    if (ctx->audio_event != AUDIO_PLAYER_CALLBACK_EVENT_IDLE) {
+        return;
+    }
+    bsp_display_lock(-1);
+    lv_async_call(next_track_async, NULL);
+    bsp_display_unlock();
+}
+
+static void show_status_text(const char *text)
+{
+    bsp_display_lock(-1);
+    lv_obj_t *label = lv_label_create(lv_scr_act());
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(label, BSP_LCD_H_RES);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
+    bsp_display_unlock();
+}
 
 namespace esp_brookesia::apps
 {
@@ -56,12 +98,22 @@ namespace esp_brookesia::apps
             return false;
         }
 
-        if (bsp_extra_file_instance_init(MUSIC_DIR, &_file_iterator) != ESP_OK)
+        if (!sd_card_ready())
         {
-            ESP_LOGE(TAG, "bsp_extra_file_instance_init failed");
-            return false;
+            ESP_LOGE(TAG, "Failed to mount SD card");
+            show_status_text("sd error");
+            return true;
         }
 
+        if (bsp_extra_file_instance_init(MUSIC_DIR, &_file_iterator) != ESP_OK ||
+            file_iterator_get_count(_file_iterator) == 0)
+        {
+            ESP_LOGE(TAG, "No mp3 files in %s", MUSIC_DIR);
+            show_status_text("No mp3 in /sdcard/music");
+            return true;
+        }
+
+        bsp_extra_player_register_callback(audio_event_cb, NULL);
         lv_demo_music(lv_scr_act(), _file_iterator);
         return true;
     }
@@ -77,6 +129,7 @@ namespace esp_brookesia::apps
     bool MusicPlayer::close(void)
     {
         ESP_UTILS_LOGD("Close");
+        bsp_extra_player_register_callback(NULL, NULL);
         if (audio_player_pause() != ESP_OK)
         {
             ESP_LOGE(TAG, "audio_player_pause failed");

@@ -120,7 +120,8 @@ lv_obj_t * lv_demo_music_list_create(lv_obj_t * parent)
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 
     uint32_t track_id;
-    for(track_id = 0; lv_demo_music_get_title(track_id); track_id++) {
+    // Only real tracks; the demo's placeholder entries are not added
+    for(track_id = 0; track_id < lv_demo_music_get_track_cnt(); track_id++) {
         add_list_button(list,  track_id);
     }
 

@@ -166,13 +166,27 @@ esp_err_t bsp_extra_player_del(void);
 /**
  * @brief Initialize a file iterator instance
  *
- * @param path The file path for the iterator.
+ * Lists only the *.mp3 regular files in the directory, sorted by name.
+ * Hidden files (names starting with '.') are skipped.
+ *
+ * @param path The directory to scan, e.g. "/sdcard/music".
  * @param ret_instance A pointer to the file iterator instance to be returned.
  * @return
  *     - ESP_OK: Successfully initialized the file iterator instance.
  *     - ESP_FAIL: Failed to initialize the file iterator instance due to invalid parameters or memory allocation failure.
  */
 esp_err_t bsp_extra_file_instance_init(const char *path, file_iterator_instance_t **ret_instance);
+
+/**
+ * @brief Estimate the playing time of an mp3 file in seconds
+ *
+ * Uses the first frame's bitrate and the file size (after any ID3v2 tag),
+ * so it is exact for constant-bitrate files and approximate for VBR files.
+ *
+ * @param path The mp3 file path.
+ * @return Duration in seconds, or 0 if the file cannot be read or has no valid frame.
+ */
+uint32_t bsp_extra_mp3_duration_sec(const char *path);
 
 /**
  * @brief Play the audio file at the specified index in the file iterator

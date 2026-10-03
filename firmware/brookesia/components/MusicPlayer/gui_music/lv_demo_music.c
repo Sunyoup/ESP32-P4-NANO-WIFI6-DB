@@ -226,6 +226,15 @@ uint32_t lv_demo_music_get_track_length(uint32_t track_id)
 
     if (track_id < active_track_cnt)
     {
+        char path[256];
+        if (file_iterator_get_full_path_from_index(_file_iterator, track_id, path, sizeof(path)) > 0)
+        {
+            uint32_t seconds = bsp_extra_mp3_duration_sec(path);
+            if (seconds > 0)
+            {
+                return seconds;
+            }
+        }
         return time_list_num;
     }
     else if (track_id < active_track_cnt + sizeof(time_list) / sizeof(time_list[0]))

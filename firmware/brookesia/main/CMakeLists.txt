@@ -31,5 +31,3 @@ endfunction()
 #     PUBLIC
 #         "-Wno-attributes"
 # )
-
-spiffs_create_partition_image(storage ../spiffs FLASH_IN_PROJECT)

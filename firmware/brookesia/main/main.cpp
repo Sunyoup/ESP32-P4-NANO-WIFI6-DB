@@ -58,9 +58,6 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    ESP_ERROR_CHECK(bsp_spiffs_mount());
-    ESP_LOGI(ESP_UTILS_LOG_TAG, "SPIFFS mount successfully");
-
     ESP_ERROR_CHECK(bsp_extra_codec_init());
 
     ESP_ERROR_CHECK(bsp_extra_codec_volume_set(CODEC_DEFAULT_VOLUME, NULL));

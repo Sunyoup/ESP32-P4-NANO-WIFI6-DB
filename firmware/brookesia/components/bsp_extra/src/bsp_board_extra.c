@@ -6,7 +6,10 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <dirent.h>
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_codec_dev_defaults.h"
@@ -199,17 +202,115 @@ esp_err_t bsp_extra_player_del(void)
     return ESP_OK;
 }
 
+static bool is_mp3_file(const struct dirent *entry)
+{
+    // Skip hidden files such as macOS "._*.mp3" metadata written to the SD card
+    if (entry->d_type != DT_REG || entry->d_name[0] == '.') {
+        return false;
+    }
+    const char *ext = strrchr(entry->d_name, '.');
+    return ext && strcasecmp(ext, ".mp3") == 0;
+}
+
+static int mp3_name_cmp(const void *a, const void *b)
+{
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
 esp_err_t bsp_extra_file_instance_init(const char *path, file_iterator_instance_t **ret_instance)
 {
     ESP_RETURN_ON_FALSE(path, ESP_FAIL, TAG, "path is NULL");
     ESP_RETURN_ON_FALSE(ret_instance, ESP_FAIL, TAG, "ret_instance is NULL");
 
-    file_iterator_instance_t *file_iterator = file_iterator_new(path);
-    ESP_RETURN_ON_FALSE(file_iterator, ESP_FAIL, TAG, "file_iterator_new failed, %s", path);
+    DIR *dir = opendir(path);
+    ESP_RETURN_ON_FALSE(dir, ESP_FAIL, TAG, "opendir failed, %s", path);
 
-    *ret_instance = file_iterator;
+    // First pass counts the mp3 files so the list is allocated once
+    size_t count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (is_mp3_file(entry)) {
+            count++;
+        }
+    }
+    rewinddir(dir);
+
+    file_iterator_instance_t *instance = calloc(1, sizeof(file_iterator_instance_t));
+    char **list = calloc(count ? count : 1, sizeof(char *));
+    if (!instance || !list) {
+        free(instance);
+        free(list);
+        closedir(dir);
+        ESP_LOGE(TAG, "no memory for mp3 list");
+        return ESP_ERR_NO_MEM;
+    }
+
+    size_t index = 0;
+    while (index < count && (entry = readdir(dir)) != NULL) {
+        if (is_mp3_file(entry)) {
+            list[index++] = strdup(entry->d_name);
+        }
+    }
+    closedir(dir);
+
+    // readdir order on FAT is not alphabetical, so sort for a stable playlist
+    qsort(list, count, sizeof(char *), mp3_name_cmp);
+
+    instance->count = count;
+    instance->index = 0;
+    instance->list = list;
+    instance->directory_path = strdup(path);
+    *ret_instance = instance;
 
     return ESP_OK;
+}
+
+// MPEG-1 and MPEG-2/2.5 Layer III bitrate tables (kbps), index 0 and 15 are invalid
+static const uint16_t mp3_bitrate_v1_l3[16] = {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0};
+static const uint16_t mp3_bitrate_v2_l3[16] = {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0};
+
+uint32_t bsp_extra_mp3_duration_sec(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    ESP_RETURN_ON_FALSE(fp, 0, TAG, "unable to open file %s", path);
+
+    uint8_t buf[4096];
+    uint32_t audio_offset = 0;
+
+    fseek(fp, 0, SEEK_END);
+    long file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    // Skip the ID3v2 tag (its size is a 28-bit syncsafe integer)
+    if (fread(buf, 1, 10, fp) == 10 && memcmp(buf, "ID3", 3) == 0) {
+        audio_offset = 10 + (((uint32_t)(buf[6] & 0x7f) << 21) | ((buf[7] & 0x7f) << 14) |
+                             ((buf[8] & 0x7f) << 7) | (buf[9] & 0x7f));
+    }
+
+    uint32_t bitrate_kbps = 0;
+    fseek(fp, audio_offset, SEEK_SET);
+    size_t n = fread(buf, 1, sizeof(buf), fp);
+    for (size_t i = 0; i + 4 <= n; i++) {
+        if (buf[i] != 0xFF || (buf[i + 1] & 0xE0) != 0xE0) {
+            continue;
+        }
+        int version = (buf[i + 1] >> 3) & 0x3;  // 3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5
+        int layer = (buf[i + 1] >> 1) & 0x3;    // 1 = Layer III
+        int bitrate_idx = buf[i + 2] >> 4;
+        if (version == 1 || layer != 1 || bitrate_idx == 0 || bitrate_idx == 15) {
+            continue;
+        }
+        bitrate_kbps = (version == 3) ? mp3_bitrate_v1_l3[bitrate_idx] : mp3_bitrate_v2_l3[bitrate_idx];
+        break;
+    }
+    fclose(fp);
+
+    if (bitrate_kbps == 0 || file_size <= (long)audio_offset) {
+        return 0;
+    }
+    // Constant bitrate assumed: duration = audio bytes * 8 / bitrate
+    uint64_t audio_bytes = (uint64_t)(file_size - audio_offset);
+    return (uint32_t)((audio_bytes * 8) / ((uint64_t)bitrate_kbps * 1000));
 }
 
 esp_err_t bsp_extra_player_play_index(file_iterator_instance_t *instance, int index)

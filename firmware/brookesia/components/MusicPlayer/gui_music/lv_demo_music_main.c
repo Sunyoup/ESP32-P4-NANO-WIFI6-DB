@@ -1045,7 +1045,8 @@ static void timer_cb(lv_timer_t * t)
 static void spectrum_end_cb(lv_anim_t * a)
 {
     LV_UNUSED(a);
-    lv_demo_music_album_next(true);
+    // The visualizer length is fixed (about 60 s), not the track length.
+    // The next track is started by the audio player's IDLE event (see MusicPlayer.cpp).
 }
 
 static void stop_start_anim(lv_timer_t * t)
