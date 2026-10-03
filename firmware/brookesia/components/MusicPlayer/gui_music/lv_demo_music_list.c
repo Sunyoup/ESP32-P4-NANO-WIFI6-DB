@@ -12,6 +12,7 @@
 #include "lv_demo_music_main.h"
 
 #include "lv_demo_music.h"
+#include "lv_demo_music_font.h"
 /*********************
  *      DEFINES
  *********************/
@@ -55,11 +56,11 @@ LV_IMAGE_DECLARE(img_lv_demo_music_btn_list_pause);
 lv_obj_t * lv_demo_music_list_create(lv_obj_t * parent)
 {
 #if APP_DEMO_MUSIC_LARGE
-    font_small = &lv_font_montserrat_16;
-    font_medium = &lv_font_montserrat_22;
+    font_small = lv_demo_music_font_or(16, &lv_font_montserrat_16);
+    font_medium = lv_demo_music_font_or(22, &lv_font_montserrat_22);
 #else
-    font_small = &lv_font_montserrat_12;
-    font_medium = &lv_font_montserrat_16;
+    font_small = lv_demo_music_font_or(12, &lv_font_montserrat_12);
+    font_medium = lv_demo_music_font_or(16, &lv_font_montserrat_16);
 #endif
 
     lv_style_init(&style_scrollbar);

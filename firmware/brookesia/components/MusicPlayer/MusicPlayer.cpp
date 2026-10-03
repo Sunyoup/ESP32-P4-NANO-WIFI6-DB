@@ -16,9 +16,11 @@
 #include "bsp_board_extra.h"
 #include "gui_music/lv_demo_music.h"
 #include "gui_music/lv_demo_music_main.h"
+#include "gui_music/lv_demo_music_font.h"
 #include <dirent.h>
 
 #define MUSIC_DIR BSP_SD_MOUNT_POINT "/music"
+#define MUSIC_FONT_FILE BSP_SD_MOUNT_POINT "/font/music.otf"
 
 LV_IMG_DECLARE(img_app_musicplayer);
 
@@ -104,6 +106,9 @@ namespace esp_brookesia::apps
             show_status_text("sd error");
             return true;
         }
+
+        // Optional: without the font file the built-in Montserrat fonts are used
+        lv_demo_music_font_load(MUSIC_FONT_FILE);
 
         if (bsp_extra_file_instance_init(MUSIC_DIR, &_file_iterator) != ESP_OK ||
             file_iterator_get_count(_file_iterator) == 0)

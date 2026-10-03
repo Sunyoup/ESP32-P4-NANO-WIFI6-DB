@@ -103,3 +103,9 @@ CONFIG_CAMERA_OV5647_MIPI_DEFAULT_FMT_RAW10_1280X960_BINNING_45FPS=y
 
 # Two NTP servers are used by the Settings app (kr.pool.ntp.org, time.google.com)
 CONFIG_LWIP_SNTP_MAX_SERVERS=2
+
+# Long file names with non-CP437 characters (e.g. Japanese comma, CJK) on the SD card
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+
+# Music Player font from SD card (lv_demo_music_font.c)
+CONFIG_LV_USE_TINY_TTF=y

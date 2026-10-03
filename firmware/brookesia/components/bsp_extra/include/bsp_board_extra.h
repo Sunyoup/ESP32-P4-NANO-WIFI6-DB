@@ -189,6 +189,22 @@ esp_err_t bsp_extra_file_instance_init(const char *path, file_iterator_instance_
 uint32_t bsp_extra_mp3_duration_sec(const char *path);
 
 /**
+ * @brief Play the file at the specified index starting at a time position (seek)
+ *
+ * The position is computed from the file's constant bitrate, so seeking is
+ * accurate for CBR files and approximate for VBR files.
+ *
+ * @param instance The file iterator instance.
+ * @param index The index of the file to play within the iterator.
+ * @param start_sec Start position in seconds (0 plays from the beginning).
+ * @return
+ *     - ESP_OK: Successfully started playing from the position.
+ *     - ESP_ERR_INVALID_ARG: The position is past the end of the file.
+ *     - ESP_FAIL: Failed to play the file.
+ */
+esp_err_t bsp_extra_player_play_index_at(file_iterator_instance_t *instance, int index, uint32_t start_sec);
+
+/**
  * @brief Play the audio file at the specified index in the file iterator
  *
  * @param instance The file iterator instance.

@@ -16,7 +16,7 @@ endforeach()
 idf_component_register(
     SRCS ${SRCS}
     INCLUDE_DIRS ${INCLUDE_DIRS}
-    REQUIRES driver esp_codec_dev esp_driver_gpio esp_driver_i2s esp_netif
+    REQUIRES driver esp_codec_dev esp_driver_gpio esp_driver_i2s esp_netif esp-audio-player
     PRIV_REQUIRES esp32_p4_nano_wifi6_db esp_timer fatfs esp_psram esp_mm esp_driver_i2c esp_driver_ledc esp_eth esp_event ip101 lwip
 )
 

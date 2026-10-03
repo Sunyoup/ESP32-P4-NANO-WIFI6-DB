@@ -15,6 +15,7 @@
 #include "assets/spectrum_3.h"
 
 #include "lv_demo_music.h"
+#include "lv_demo_music_font.h"
 #include "esp_log.h"
 #include "bsp_board_extra.h"
 #include "audio_player.h"
@@ -66,6 +67,7 @@ static void play_event_click_cb(lv_event_t * e);
 static void prev_click_event_cb(lv_event_t * e);
 static void next_click_event_cb(lv_event_t * e);
 static void timer_cb(lv_timer_t * t);
+static void slider_event_cb(lv_event_t * e);
 static void track_load(uint32_t id);
 static void stop_start_anim(lv_timer_t * t);
 static void spectrum_end_cb(lv_anim_t * a);
@@ -106,6 +108,7 @@ static const uint16_t rnd_array[30] = {994, 285, 553, 11, 792, 707, 966, 641, 85
 static file_iterator_instance_t *file_iterator;
 static bool pause = false;
 static bool pause_exit = false;
+static bool seeking = false;   // true while the progress bar is being dragged
 
 /**********************
  *      MACROS
@@ -149,11 +152,11 @@ lv_obj_t * lv_demo_music_main_create(lv_obj_t * parent, file_iterator_instance_t
     spectrum_len = 0;
 
 #if APP_DEMO_MUSIC_LARGE
-    font_small = &lv_font_montserrat_22;
-    font_large = &lv_font_montserrat_32;
+    font_small = lv_demo_music_font_or(22, &lv_font_montserrat_22);
+    font_large = lv_demo_music_font_or(32, &lv_font_montserrat_32);
 #else
-    font_small = &lv_font_montserrat_12;
-    font_large = &lv_font_montserrat_16;
+    font_small = lv_demo_music_font_or(12, &lv_font_montserrat_12);
+    font_large = lv_demo_music_font_or(16, &lv_font_montserrat_16);
 #endif
 
     /*Create the content of the music player*/
@@ -660,6 +663,7 @@ static lv_obj_t * create_ctrl_box(lv_obj_t * parent)
     lv_obj_set_style_bg_grad_color(slider_obj, lv_color_hex(0xa666f1), LV_PART_INDICATOR);
     lv_obj_set_style_outline_width(slider_obj, 0, 0);
     lv_obj_add_event_cb(slider_obj, del_counter_timer_cb, LV_EVENT_DELETE, NULL);
+    lv_obj_add_event_cb(slider_obj, slider_event_cb, LV_EVENT_ALL, NULL);
 
     time_obj = lv_label_create(cont);
     lv_obj_set_style_text_font(time_obj, font_small, 0);
@@ -1037,9 +1041,46 @@ static void next_click_event_cb(lv_event_t * e)
 static void timer_cb(lv_timer_t * t)
 {
     LV_UNUSED(t);
+    if(seeking) return;   // keep the bar where the finger is while dragging
+
     time_act++;
     lv_label_set_text_fmt(time_obj, "%"LV_PRIu32":%02"LV_PRIu32, time_act / 60, time_act % 60);
     lv_slider_set_value(slider_obj, time_act, LV_ANIM_ON);
+}
+
+/* Start the current track at the given second and update the time and bar */
+static void seek_to(uint32_t sec)
+{
+    uint32_t len = (uint32_t)lv_slider_get_max_value(slider_obj);
+    if(len > 0 && sec >= len) sec = len - 1;
+
+    if(bsp_extra_player_play_index_at(file_iterator, track_id, sec) != ESP_OK) {
+        // Could not seek (e.g. file error): show the position that is still playing
+        lv_slider_set_value(slider_obj, time_act, LV_ANIM_OFF);
+        return;
+    }
+
+    time_act = sec;
+    lv_label_set_text_fmt(time_obj, "%"LV_PRIu32":%02"LV_PRIu32, time_act / 60, time_act % 60);
+    lv_slider_set_value(slider_obj, time_act, LV_ANIM_OFF);
+
+    playing = true;
+    pause = false;
+    pause_exit = false;
+    lv_obj_add_state(play_obj, LV_STATE_CHECKED);
+    if(sec_counter_timer) lv_timer_resume(sec_counter_timer);
+}
+
+static void slider_event_cb(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if(code == LV_EVENT_PRESSED || code == LV_EVENT_PRESSING) {
+        seeking = true;
+    }
+    else if(code == LV_EVENT_RELEASED) {
+        seeking = false;
+        seek_to((uint32_t)lv_slider_get_value(slider_obj));
+    }
 }
 
 static void spectrum_end_cb(lv_anim_t * a)

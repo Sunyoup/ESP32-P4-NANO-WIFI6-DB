@@ -269,27 +269,37 @@ esp_err_t bsp_extra_file_instance_init(const char *path, file_iterator_instance_
 static const uint16_t mp3_bitrate_v1_l3[16] = {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0};
 static const uint16_t mp3_bitrate_v2_l3[16] = {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0};
 
-uint32_t bsp_extra_mp3_duration_sec(const char *path)
+typedef struct {
+    uint32_t audio_offset;   // first byte after the ID3v2 tag
+    uint32_t bitrate_kbps;   // bitrate of the first Layer III frame
+    uint32_t file_size;
+} mp3_info_t;
+
+// Read the ID3v2 size and the first frame's bitrate. Returns false if no frame is found.
+static bool mp3_read_info(const char *path, mp3_info_t *info)
 {
     FILE *fp = fopen(path, "rb");
-    ESP_RETURN_ON_FALSE(fp, 0, TAG, "unable to open file %s", path);
+    if (fp == NULL) {
+        return false;
+    }
 
     uint8_t buf[4096];
-    uint32_t audio_offset = 0;
+    memset(info, 0, sizeof(*info));
 
     fseek(fp, 0, SEEK_END);
-    long file_size = ftell(fp);
+    info->file_size = (uint32_t)ftell(fp);
     fseek(fp, 0, SEEK_SET);
 
     // Skip the ID3v2 tag (its size is a 28-bit syncsafe integer)
     if (fread(buf, 1, 10, fp) == 10 && memcmp(buf, "ID3", 3) == 0) {
-        audio_offset = 10 + (((uint32_t)(buf[6] & 0x7f) << 21) | ((buf[7] & 0x7f) << 14) |
-                             ((buf[8] & 0x7f) << 7) | (buf[9] & 0x7f));
+        info->audio_offset = 10 + (((uint32_t)(buf[6] & 0x7f) << 21) | ((buf[7] & 0x7f) << 14) |
+                                   ((buf[8] & 0x7f) << 7) | (buf[9] & 0x7f));
     }
 
-    uint32_t bitrate_kbps = 0;
-    fseek(fp, audio_offset, SEEK_SET);
+    fseek(fp, info->audio_offset, SEEK_SET);
     size_t n = fread(buf, 1, sizeof(buf), fp);
+    fclose(fp);
+
     for (size_t i = 0; i + 4 <= n; i++) {
         if (buf[i] != 0xFF || (buf[i + 1] & 0xE0) != 0xE0) {
             continue;
@@ -300,17 +310,55 @@ uint32_t bsp_extra_mp3_duration_sec(const char *path)
         if (version == 1 || layer != 1 || bitrate_idx == 0 || bitrate_idx == 15) {
             continue;
         }
-        bitrate_kbps = (version == 3) ? mp3_bitrate_v1_l3[bitrate_idx] : mp3_bitrate_v2_l3[bitrate_idx];
+        info->bitrate_kbps = (version == 3) ? mp3_bitrate_v1_l3[bitrate_idx] : mp3_bitrate_v2_l3[bitrate_idx];
         break;
     }
-    fclose(fp);
 
-    if (bitrate_kbps == 0 || file_size <= (long)audio_offset) {
+    return info->bitrate_kbps != 0 && info->file_size > info->audio_offset;
+}
+
+uint32_t bsp_extra_mp3_duration_sec(const char *path)
+{
+    mp3_info_t info;
+    if (!mp3_read_info(path, &info)) {
         return 0;
     }
     // Constant bitrate assumed: duration = audio bytes * 8 / bitrate
-    uint64_t audio_bytes = (uint64_t)(file_size - audio_offset);
-    return (uint32_t)((audio_bytes * 8) / ((uint64_t)bitrate_kbps * 1000));
+    uint64_t audio_bytes = (uint64_t)(info.file_size - info.audio_offset);
+    return (uint32_t)((audio_bytes * 8) / ((uint64_t)info.bitrate_kbps * 1000));
+}
+
+esp_err_t bsp_extra_player_play_index_at(file_iterator_instance_t *instance, int index, uint32_t start_sec)
+{
+    ESP_RETURN_ON_FALSE(instance, ESP_FAIL, TAG, "instance is NULL");
+
+    char filename[256];
+    int retval = file_iterator_get_full_path_from_index(instance, index, filename, sizeof(filename));
+    ESP_RETURN_ON_FALSE(retval > 0 && retval < (int)sizeof(filename), ESP_FAIL, TAG, "file path failed");
+
+    mp3_info_t info;
+    ESP_RETURN_ON_FALSE(mp3_read_info(filename, &info), ESP_FAIL, TAG, "not a readable mp3: %s", filename);
+
+    // Byte position of the requested time, from the CBR bitrate (kbps * 1000 / 8 = bytes per second)
+    uint32_t start_offset = info.audio_offset;
+    if (start_sec > 0) {
+        uint64_t pos = (uint64_t)info.audio_offset + (uint64_t)start_sec * info.bitrate_kbps * 125;
+        ESP_RETURN_ON_FALSE(pos < info.file_size, ESP_ERR_INVALID_ARG, TAG, "start %lu s is past the end", (unsigned long)start_sec);
+        start_offset = (uint32_t)pos;
+    }
+
+    ESP_LOGI(TAG, "seek '%s' to %lu s (byte %lu)", filename, (unsigned long)start_sec, (unsigned long)start_offset);
+    FILE *fp = fopen(filename, "rb");
+    ESP_RETURN_ON_FALSE(fp, ESP_FAIL, TAG, "unable to open file");
+
+    esp_err_t ret = audio_player_play_at(fp, start_offset);
+    if (ret != ESP_OK) {
+        fclose(fp);  // on success the audio player closes fp
+        return ret;
+    }
+
+    snprintf(audio_file_path, sizeof(audio_file_path), "%s", filename);
+    return ESP_OK;
 }
 
 esp_err_t bsp_extra_player_play_index(file_iterator_instance_t *instance, int index)
