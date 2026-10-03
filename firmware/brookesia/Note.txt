@@ -441,3 +441,71 @@ Waveshare ESP32-P4-WIFI6-Touch-LCD-7B factory 펌웨어의 ai-agent 는 다른 �
 브랜치 구조 갱신
  - brookesia-idf61-fixes -> camera-ppa-fix -> videoplayer-ppa-rotate -> musicplayer-track-fix -> timezone-fix
    (timezone-fix 에는 위 모든 수정이 들어 있다.)
+
+########################################################################
+## 추가 기록 (2026-10-04): SD카드 mp3 재생 (브랜치: mp3-sd-playback)
+##   timezone-fix 에서 분기. timezone-fix 브랜치는 그대로 둔다.
+########################################################################
+
+== 변경 요약 ==
+ - Music Player 가 SD카드 /sdcard/music/ 의 mp3 를 재생한다. 펌웨어 내장 mp3(SPIFFS) 는 없앴다.
+ - storage(SPIFFS) 파티션과 spiffs/ 폴더를 제거했다. 5MB 는 빈 공간이 된다 (앱 .bin 크기는 그대로).
+   이 기록보다 앞의 "storage/spiffs/mp3 내장" 항목은 이 변경으로 대체되었다.
+ - SD 카드 클럭: BSP 기본 40MHz -> 20MHz (SDMMC_FREQ_DEFAULT).
+
+== 파일 이름 (8.3 짧은 이름 문제) ==
+ - 원인: CONFIG_FATFS_API_ENCODING_ANSI_OEM (CP437). CP437 에 없는 문자(、, 한자, 가나, 한글)가 있으면
+   긴 이름 대신 8.3 별칭(예: GILLCH~1.MP3, ___(__~1.MP3)이 나왔다.
+ - 해결: CONFIG_FATFS_API_ENCODING_UTF_8=y (sdkconfig.defaults 에도 기록).
+
+== 재생 흐름 ==
+ - 곡 끝 자동 넘김: 시각화 애니메이션 완료 콜백이 아니라 오디오 플레이어의 IDLE 이벤트로 넘긴다.
+   (애니메이션은 약 60초 고정이라 예전에는 1분에서 끊겼다.)
+ - 곡 길이: 첫 프레임 비트레이트와 파일 크기로 계산 (bsp_extra_mp3_duration_sec, CBR 가정).
+   진행 바와 시간 표시에 사용한다.
+ - 목록: 실제 곡 개수까지만 만든다 (LVGL 데모의 가짜 항목 제거).
+ - 탐색: 진행 바를 누르면 그 초 위치로 재생한다 (bsp_extra_player_play_index_at, CBR 기준 바이트 위치).
+ - 파일 목록: .mp3 만, 숨김 파일(._*) 제외, 이름순 정렬 (bsp_extra_file_instance_init).
+ - SD 카드 마운트: VideoPlayer 가 이미 마운트했으면 다시 마운트하지 않는다 (두 번 마운트하면 실패).
+
+== esp-audio-player 로컬 복사본 (components/esp-audio-player) ==
+ - managed_components/chmorgan__esp-audio-player 를 components/ 로 복사해서 고쳤다.
+   managed 쪽은 다시 받으면 덮어써지므로 의존성을 제거했다 (bsp_extra/idf_component.yml 은 esp-libhelix-mp3 만 의존).
+ - 프로젝트 CMakeLists.txt 의 -Wno-error 대상 이름을 esp-audio-player 로 바꿨다.
+ - 변경 1 (ID3): is_mp3() 가 ID3v2 태그 뒤에서 디코딩을 시작한다.
+   태그 안의 앨범 아트(JPEG)에 있는 FF Ex 바이트가 가짜 프레임으로 잡혀 "status error -6" 이 쏟아지던 문제.
+ - 변경 2 (판별): CRC 보호 헤더(FF FA, FF F2)도 mp3 로 인정한다.
+   예전에는 FF FB/F3/F2 만 인정해서 일부 파일이 "unknown file type" 이 났다 (Olsen-Banden).
+ - 변경 3 (탐색): audio_player_play_at(fp, start_offset) 추가. 이벤트에 시작 위치를 실어 보내고 판별은 건너뛴다.
+   디코더는 새 곡과 탐색 때마다 다시 만든다 (이전 곡의 bit reservoir 를 쓰지 않도록).
+ - 변경 4 (오류 전진): MP3Decode 가 실패한 동기 위치에서 포인터를 옮기지 않아서 같은 자리에서 무한 실패하던 문제.
+   오류가 나면 한 바이트 전진한다. 탐색 직후 가짜 동기 후보를 건너뛰는 데 필요했다.
+
+== 태그 없는 mp3 준비 (ffmpeg, 참고용) ==
+ - 변경 1 이 들어간 뒤에는 태그가 있는 파일도 재생되지만, 태그 없는 복사본으로 확인할 수 있다.
+   오디오는 다시 인코딩하지 않는다 (-c:a copy):
+     ffmpeg -v error -y -i "in.mp3" -map 0:a -map_metadata -1 -vn -c:a copy -id3v2_version 0 -write_xing 0 "out.mp3"
+ - 주의: 이렇게 처리한 파일이 FF FA 헤더로 시작하면 판별에서 빠지고 (Olsen-Banden 의 경우 변경 2 로 해결),
+   태그를 남기면 가짜 동기가 생길 수 있다. 그럴 때는 다시 인코딩한다:
+     ffmpeg -v error -y -i "in.mp3" -map 0:a -map_metadata -1 -vn -c:a libmp3lame -b:a 320k -id3v2_version 0 -write_xing 0 "out.mp3"
+
+== 폰트 (한글, 가나, 한자 표시) ==
+ - LVGL TinyTTF 사용 (CONFIG_LV_USE_TINY_TTF=y). SD카드 /font/music.otf 를 PSRAM 에 올려서 목록과 재생 화면에 쓴다.
+   파일이 없으면 기존 Montserrat 글꼴로 돌아간다 (lv_demo_music_font.c).
+ - 프로젝트 파일: firmware/brookesia/font/music.otf (336KB). 원본은 Noto Sans CJK KR (NotoSansCJK-Regular.ttc, face 1)
+   에서 pyftsubset 으로 만든 서브셋이다. 라틴, 가나, 한글 2,350자, 곡 이름에 쓰인 한자를 담았다.
+   새 글자가 필요하면 글자 목록을 늘려서 다시 서브셋을 만든다.
+ - SD카드 배치: /font/music.otf  (/fonts/UI_FONT_16.bin 은 JC3248 공장 펌웨어용 파일로 보이며 이 프로젝트에서 읽지 않는다)
+
+== 병합 이미지 ==
+ - firmware/brookesia/brookesia_firmware.bin (0x0 기준, 16MB 플래시용). 만드는 법:
+     cd build && esptool --chip esp32p4 merge-bin -o ../brookesia_firmware.bin @flash_args
+ - storage 파티션을 없앴으므로 예전 병합 이미지(FactoryOnly-*.bin 등)와 섞어 쓰면 안 된다.
+   앱을 다시 빌드했으면 병합도 다시 할 것.
+
+== 알려진 문제 / 남은 것 ==
+ - 곡 전환 때 "i2s_channel_disable ... not been enabled yet" 로그가 나온다. 재생에는 영향 없음 (기존 문제).
+ - 곡 길이는 CBR 가정이다. VBR 곡은 길이와 탐색 위치가 근사치다.
+ - 시각화 막대는 탐색 위치와 맞지 않는다 (장식). 고정 길이 애니메이션이 끝나면 멈춘다.
+ - 긴 이름에 CJK 글자가 있어도 폰트에 없는 글자는 네모로 나온다.
+ - 부팅 때 "eh_init_evt: major version mismatch" 는 ESP-Hosted 버전 불일치 (위 6번 항목) 로 이번 작업과 무관하다.
