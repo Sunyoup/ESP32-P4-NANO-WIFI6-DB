@@ -16,6 +16,7 @@
 
 #include "lv_demo_music.h"
 #include "lv_demo_music_font.h"
+#include "lv_demo_music_cover.h"
 #include "esp_log.h"
 #include "bsp_board_extra.h"
 #include "audio_player.h"
@@ -969,6 +970,21 @@ static void start_anim_cb(void * var, int32_t v)
     lv_obj_invalidate(spectrum_obj);
 }
 
+/* The cover descriptor belongs to its image widget and is freed with it */
+static void cover_delete_cb(lv_event_t * e)
+{
+    lv_demo_music_cover_destroy(lv_event_get_user_data(e));
+}
+
+static lv_image_dsc_t * cover_for_track(uint32_t id)
+{
+    if(file_iterator == NULL) return NULL;
+
+    char path[256];
+    if(file_iterator_get_full_path_from_index(file_iterator, id, path, sizeof(path)) <= 0) return NULL;
+    return lv_demo_music_cover_create(path);
+}
+
 static lv_obj_t * album_image_create(lv_obj_t * parent)
 {
     LV_IMAGE_DECLARE(img_lv_demo_music_cover_1);
@@ -1000,6 +1016,17 @@ static lv_obj_t * album_image_create(lv_obj_t * parent)
     lv_obj_add_event_cb(img, album_gesture_event_cb, LV_EVENT_GESTURE, NULL);
     lv_obj_remove_flag(img, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_flag(img, LV_OBJ_FLAG_CLICKABLE);
+
+    // The mp3's own cover art (if any) replaces the demo disc, shown as a circle of the same size
+    lv_image_dsc_t * cover = cover_for_track(track_id);
+    if(cover) {
+        /* Same size as the demo disc, which is not set for every track */
+        int32_t size = img_lv_demo_music_cover_1.header.w;
+        lv_image_set_src(img, cover);
+        lv_image_set_inner_align(img, LV_IMAGE_ALIGN_STRETCH);
+        lv_obj_set_size(img, size, size);
+        lv_obj_add_event_cb(img, cover_delete_cb, LV_EVENT_DELETE, cover);
+    }
 
     return img;
 

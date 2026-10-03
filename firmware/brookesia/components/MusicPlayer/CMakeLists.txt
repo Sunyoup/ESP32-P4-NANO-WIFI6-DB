@@ -6,7 +6,7 @@ file(GLOB_RECURSE PROJ_SRCS_CPP ${PROJ_SRC}/*.cpp)
 idf_component_register(
     SRCS  ${PROJ_SRCS_C} ${PROJ_SRCS_CPP}
     INCLUDE_DIRS ${PROJ_SRC}
-    REQUIRES esp32_p4_nano_wifi6_db driver bsp_extra
+    REQUIRES esp32_p4_nano_wifi6_db driver bsp_extra espressif__esp_new_jpeg
 )
 
 set_source_files_properties(
