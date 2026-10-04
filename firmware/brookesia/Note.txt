@@ -519,3 +519,65 @@ Waveshare ESP32-P4-WIFI6-Touch-LCD-7B factory 펌웨어의 ai-agent 는 다른 �
  - 회전은 하지 않고 고정했다.
  - 기본 디스크 이미지는 곡 0~2 에만 있어서, 크기를 위젯의 src 에서 얻으면 3번째 곡 이후 크기가 0 이 되었다.
    그래서 cover_1 asset 의 크기를 직접 쓴다.
+
+
+########################################################################
+## 추가 기록 (2026-10-05): 얼굴/보행자 검출 (브랜치: face-pedestrian-detect)
+##   mp3-sd-playback 에서 분기.
+########################################################################
+
+== 출처와 목적 ==
+ - 예전 Waveshare esp_brookesia_phone(1월 빌드본, 현재 비공개)의 Camera 앱에 있던 얼굴/보행자 검출을 가져왔다.
+   이 저장소의 Camera 컴포넌트에는 검출이 없었다.
+
+== 검출 라이브러리 (레지스트리 사용, 로컬 복사본 없음) ==
+ - components/Camera/idf_component.yml:
+     espressif/human_face_detect ^0.5.0
+     espressif/pedestrian_detect ^0.3.2
+   두 컴포넌트가 esp-dl 을 가져온다 (dependencies.lock 에 esp-dl 3.3.13).
+ - 처음에는 옛 코드의 복사본(human_face_detect 0.2.0, pedestrian_detect 0.2.x, esp-dl 3.1.0)을 components/ 에 넣었다.
+   esp-dl 3.1.0 은 IDF 6.1 에서 fbs_loader 가 mbedtls/aes.h 를 못 찾아 빌드가 깨졌다 (IDF 6 에서 mbedtls 헤더 위치가 바뀜).
+   esp-dl 3.3 으로 올리니 옛 래퍼가 API 불일치로 깨져서 복사본을 지우고 레지스트리 버전을 썼다.
+ - CMake REQUIRES: espressif__human_face_detect espressif__pedestrian_detect (레지스트리 컴포넌트 이름).
+
+== 모델은 SD 카드에서 읽는다 (펌웨어 크기 절감) ==
+ - sdkconfig.defaults: CONFIG_HUMAN_FACE_DETECT_MODEL_IN_SDCARD=y, CONFIG_PEDESTRIAN_DETECT_MODEL_IN_SDCARD=y
+   (sdkconfig 도 같이 고침. sdkconfig 는 gitignore 대상이라 커밋되지 않는다.)
+ - 앱 크기: 0x7e0070 (약 8.2MB), 9MB factory 파티션의 12% 여유.
+ - SD 카드 배치 (CONFIG_*_MODEL_SDCARD_DIR 기본값 models/p4):
+     /sdcard/models/p4/human_face_detect_msr_s8_v1.espdl   (61 KB)
+     /sdcard/models/p4/human_face_detect_mnp_s8_v1.espdl   (130 KB)
+     /sdcard/models/p4/pedestrian_detect_pico_s8_v1.espdl  (435 KB)
+   원본: managed_components/espressif__human_face_detect/models/p4/ , espressif__pedestrian_detect/models/p4/
+   얼굴 기본 모델(MSRMNP)은 msr 과 mnp 두 파일이 모두 필요하다.
+ - 모델이 없으면 검출 시 실패한다. 확인하지는 않았다.
+
+== Camera 앱 변경 (components/Camera) ==
+ - 프리뷰 경로: PPA 가 카메라 프레임을 LCD 프레임버퍼에 90도 회전해 쓴 뒤, 같은 프레임을 검출 버퍼로 한 번 더 회전 복사한다.
+   검출 태스크(코어 1, 우선순위 5)가 추론하고, 프리뷰는 기다리지 않는다. 결과는 mutex 로 공유한다.
+ - 검출 입력 방향: 시계 방향 90도 (DETECT_PPA_ROTATE_ANGLE = PPA_SRM_ROTATION_ANGLE_270).
+   모델은 사람이 똑바로 서 있는 이미지에서 학습되어 있어서, 세로 화면에서 얼굴/사람이 바로 서 있어야 잡힌다.
+   검출기 입력은 1280x720 가로 프레임이므로 박스와 키포인트를 세로 화면 좌표로 되돌린다 (toPanel, detectTask 안).
+   반시계(PPA_SRM_ROTATION_ANGLE_90)로 먼저 시험했으나 방향이 반대였다. 값만 바꾸면 되고, 0/180 은 지원하지 않는다.
+ - 모드 전환: 화면을 짧게 탭하면 Normal -> Face -> Pedestrian -> Normal.
+   왼쪽 위 24x24 사각형으로 표시 (시안: 얼굴, 노랑: 보행자). 스와이프는 카메라 종료.
+   LVGL 버튼 UI 가 없는 이 앱 구조 때문에 탭으로 바꿨다.
+ - 그림: 박스 빨강 3px, 얼굴 키포인트 초록 점. 옛 코드의 draw_green_points 는 800 폭으로 고정되어 있었는데, 프레임 폭을 쓰도록 고쳤다.
+ - 색 순서: RGB565LE (esp-dl 3.3 에는 RGB565 enum 이 없다). 색이 어긋나면 RGB565BE 를 시험할 것. 아직 확인하지 않았다.
+ - 카메라 설정: 1280x960 bin 모드(Camera.cpp 의 CAMERA_PREFERRED_CAPTURE_*) 그대로.
+
+== 확인한 것 ==
+ - 보드(720x1280 패널)에서 Face 모드 검출 동작 확인. 얼굴을 세로로 똑바로 세웠을 때 잡혔다.
+   눕히거나 거꾸로 두면 잡히지 않았다 (회전 입력 전 확인).
+ - 검출 시간 (얼굴 모드, 로그): 한 번에 약 19~31 ms, 초당 약 8회. 회전 전 검출 시간은 측정하지 않았다.
+ - 보행자 모드는 화면/로그로 따로 확인하지 않았다.
+
+== 시리얼 로그 ==
+ - 콘솔 속도는 2000000 baud 다. 115200 으로 읽으면 아무것도 나오지 않는다.
+   idf.py -p /dev/ttyACM0 monitor 는 잘 된다 (monitor 는 기본 속도를 프로젝트 설정에서 읽는다).
+
+== 남은 것 ==
+ - 보행자 모드 실제 확인 (세로로 선 보행자 사진 또는 실물).
+ - 얼굴 모드 키포인트 위치 확인 (회전 좌표 되돌리기가 맞는지 얼굴 주변 초록 점으로 확인).
+ - 검출 실패 시 로그를 남기는 것은 없다 (모델 로드 실패, SD 카드 없음 등).
+ - 병합 이미지(brookesia_firmware.bin)는 이 작업 기준으로 다시 만들었다 (0x900070 바이트, 0x0 기준).

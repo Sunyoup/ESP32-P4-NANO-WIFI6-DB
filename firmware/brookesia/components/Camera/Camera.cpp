@@ -17,7 +17,13 @@
 #include "esp_lv_adapter.h"
 #include "esp_video_device.h"
 #include "esp_video_init.h"
+#include "esp_cache.h"
+#include "esp_timer.h"
+#include "freertos/semphr.h"
 #include "linux/videodev2.h"
+#include "dl_image_define.hpp"
+#include "human_face_detect.hpp"
+#include "pedestrian_detect.hpp"
 
 #include <fcntl.h>
 #include <inttypes.h>
@@ -35,6 +41,19 @@
 LV_IMG_DECLARE(img_app_camera);
 
 #define ALIGN_UP(num, align) (((num) + ((align) - 1)) & ~((align) - 1))
+
+// RGB565 colors used for the detection overlay
+#define DETECT_COLOR_BOX        0xF800  // red
+#define DETECT_COLOR_KEYPOINT   0x07E0  // green
+#define DETECT_COLOR_FACE_TAG   0x07FF  // cyan
+#define DETECT_COLOR_PED_TAG    0xFFE0  // yellow
+#define DETECT_TAG_SIZE         24
+
+// Rotation applied to the detector input. PPA's 90 is counter-clockwise and 270 is clockwise.
+// Only 90 and 270 are supported, because the coordinate mapping in detectTask() assumes a 90-degree turn.
+#ifndef DETECT_PPA_ROTATE_ANGLE
+#define DETECT_PPA_ROTATE_ANGLE PPA_SRM_ROTATION_ANGLE_270
+#endif
 
 #if CONFIG_BSP_LCD_COLOR_FORMAT_RGB565
 #define CAMERA_VIDEO_FMT V4L2_PIX_FMT_RGB565
@@ -161,6 +180,46 @@ namespace esp_brookesia::apps
         return crop;
     }
 
+    // Draw helpers for the RGB565 LCD frame. They take the frame size explicitly, so the overlay follows the panel.
+    static inline void putPixel(uint16_t *buf, int w, int h, int x, int y, uint16_t color)
+    {
+        if (x >= 0 && x < w && y >= 0 && y < h) {
+            buf[y * w + x] = color;
+        }
+    }
+
+    static void drawBox(uint16_t *buf, int w, int h, int x1, int y1, int x2, int y2, uint16_t color, int thickness)
+    {
+        for (int t = 0; t < thickness; ++t) {
+            for (int x = x1; x <= x2; ++x) {
+                putPixel(buf, w, h, x, y1 + t, color);
+                putPixel(buf, w, h, x, y2 - t, color);
+            }
+            for (int y = y1; y <= y2; ++y) {
+                putPixel(buf, w, h, x1 + t, y, color);
+                putPixel(buf, w, h, x2 - t, y, color);
+            }
+        }
+    }
+
+    static void fillSquare(uint16_t *buf, int w, int h, int x, int y, int size, uint16_t color)
+    {
+        for (int dy = 0; dy < size; ++dy) {
+            for (int dx = 0; dx < size; ++dx) {
+                putPixel(buf, w, h, x + dx, y + dy, color);
+            }
+        }
+    }
+
+    static void fillDot(uint16_t *buf, int w, int h, int cx, int cy, int radius, uint16_t color)
+    {
+        for (int dy = -radius; dy <= radius; ++dy) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                putPixel(buf, w, h, cx + dx, cy + dy, color);
+            }
+        }
+    }
+
     Camera *Camera::_instance = nullptr;
 
     Camera *Camera::requestInstance(bool use_status_bar, bool use_navigation_bar)
@@ -179,6 +238,19 @@ namespace esp_brookesia::apps
     Camera::~Camera()
     {
         close();
+
+        if (_detect_task_handle) {
+            vTaskDelete(_detect_task_handle);
+            _detect_task_handle = nullptr;
+        }
+        if (_detect_input) {
+            heap_caps_free(_detect_input);
+            _detect_input = nullptr;
+        }
+        if (_detect_results_mutex) {
+            vSemaphoreDelete(_detect_results_mutex);
+            _detect_results_mutex = nullptr;
+        }
     }
 
     bool Camera::run(void)
@@ -261,6 +333,31 @@ namespace esp_brookesia::apps
         if (_preview_task_handle) {
             return true;
         }
+
+        // The detect task lives for the whole app lifetime; it only runs inference while detection is enabled.
+        if (_detect_results_mutex == nullptr) {
+            _detect_results_mutex = xSemaphoreCreateMutex();
+            if (_detect_results_mutex == nullptr) {
+                ESP_LOGE(ESP_UTILS_LOG_TAG, "Create detect mutex failed");
+                return false;
+            }
+        }
+        if (_detect_task_handle == nullptr) {
+            BaseType_t detect_ret = xTaskCreatePinnedToCore(
+                detectTaskEntry,
+                "camera_detect",
+                DETECT_TASK_STACK_SIZE,
+                this,
+                DETECT_TASK_PRIORITY,
+                &_detect_task_handle,
+                1);
+            if (detect_ret != pdPASS) {
+                _detect_task_handle = nullptr;
+                ESP_LOGE(ESP_UTILS_LOG_TAG, "Create camera detect task failed");
+                return false;
+            }
+        }
+        _detect_running = true;
 
         _preview_running = true;
         BaseType_t ret = xTaskCreatePinnedToCore(
@@ -414,6 +511,14 @@ namespace esp_brookesia::apps
         _data_cache_line_size = 64;
 #endif
 
+        // Frame copy for the detector, sized like one LCD frame. Allocated once and kept, because the
+        // detect task may still be reading it when the preview stops.
+        if (_detect_input == nullptr) {
+            size_t detect_bytes = ALIGN_UP(BSP_LCD_H_RES * BSP_LCD_V_RES * CAMERA_BYTES_PER_PIXEL, _data_cache_line_size);
+            _detect_input = static_cast<uint16_t *>(heap_caps_aligned_calloc(_data_cache_line_size, 1, detect_bytes, MALLOC_CAP_SPIRAM));
+            ESP_RETURN_ON_FALSE(_detect_input, ESP_ERR_NO_MEM, ESP_UTILS_LOG_TAG, "Allocate detect frame buffer failed");
+        }
+
         struct v4l2_requestbuffers req = {};
         req.count = CAMERA_BUFFER_COUNT;
         req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -532,10 +637,10 @@ namespace esp_brookesia::apps
         }
     }
 
-    bool Camera::shouldExitBySwipe()
+    Camera::TouchGesture Camera::pollTouch()
     {
         if (!_touch_handle) {
-            return false;
+            return TouchGesture::None;
         }
 
         esp_lcd_touch_read_data(_touch_handle);
@@ -545,20 +650,119 @@ namespace esp_brookesia::apps
         esp_err_t ret = esp_lcd_touch_get_data(_touch_handle, points, &point_num, 1);
 
         if (ret != ESP_OK || point_num == 0) {
+            // Finger lifted: a short touch without much movement counts as a tap
+            TouchGesture gesture = (_touch_active && _touch_tap_candidate) ? TouchGesture::Tap : TouchGesture::None;
             _touch_active = false;
-            return false;
+            return gesture;
         }
 
         if (!_touch_active) {
             _touch_active = true;
+            _touch_tap_candidate = true;
             _touch_start_x = points[0].x;
             _touch_start_y = points[0].y;
-            return false;
+            return TouchGesture::None;
         }
 
         int dx = abs((int)points[0].x - (int)_touch_start_x);
         int dy = abs((int)points[0].y - (int)_touch_start_y);
-        return dx > SWIPE_EXIT_THRESHOLD || dy > SWIPE_EXIT_THRESHOLD;
+        if (dx > SWIPE_EXIT_THRESHOLD || dy > SWIPE_EXIT_THRESHOLD) {
+            _touch_tap_candidate = false;
+            return TouchGesture::SwipeExit;
+        }
+        if (dx > TAP_MOVE_THRESHOLD || dy > TAP_MOVE_THRESHOLD) {
+            _touch_tap_candidate = false;
+        }
+        return TouchGesture::None;
+    }
+
+    // Normal -> Face -> Pedestrian -> Normal
+    void Camera::cycleDetectMode()
+    {
+        DetectMode next = DetectMode::None;
+        if (_detect_mode == DetectMode::None) {
+            next = DetectMode::Face;
+        } else if (_detect_mode == DetectMode::Face) {
+            next = DetectMode::Pedestrian;
+        }
+        _detect_mode = next;
+
+        xSemaphoreTake(_detect_results_mutex, portMAX_DELAY);
+        _detect_objects.clear();
+        xSemaphoreGive(_detect_results_mutex);
+
+        const char *names[] = {"Normal", "Face detect", "Pedestrian detect"};
+        ESP_LOGI(ESP_UTILS_LOG_TAG, "Mode: %s", names[static_cast<int>(next)]);
+    }
+
+    // Rotate the finished LCD frame for the detector (PPA, counter-clockwise by default), so an upright
+    // face or pedestrian in portrait view is upright in the detector input. Runs on the preview task;
+    // skipped while the detector is busy.
+    void Camera::submitFrameForDetect(uint16_t *lcd_buf, uint32_t width, uint32_t height)
+    {
+        if (!_detect_idle || _detect_mode == DetectMode::None || _detect_input == nullptr || _ppa_srm_handle == nullptr) {
+            return;
+        }
+
+        // The rotated frame swaps width and height, so the buffer size stays the same
+        size_t bytes = ALIGN_UP(width * height * CAMERA_BYTES_PER_PIXEL, _data_cache_line_size);
+
+        ppa_srm_oper_config_t srm_config = {};
+        srm_config.in.buffer = lcd_buf;
+        srm_config.in.pic_w = width;
+        srm_config.in.pic_h = height;
+        srm_config.in.block_w = width;
+        srm_config.in.block_h = height;
+        srm_config.in.block_offset_x = 0;
+        srm_config.in.block_offset_y = 0;
+        srm_config.in.srm_cm = CAMERA_PPA_COLOR_MODE;
+
+        srm_config.out.buffer = _detect_input;
+        srm_config.out.buffer_size = bytes;
+        srm_config.out.pic_w = height;
+        srm_config.out.pic_h = width;
+        srm_config.out.block_offset_x = 0;
+        srm_config.out.block_offset_y = 0;
+        srm_config.out.srm_cm = CAMERA_PPA_COLOR_MODE;
+
+        srm_config.rotation_angle = DETECT_PPA_ROTATE_ANGLE;
+        srm_config.scale_x = 1.0f;
+        srm_config.scale_y = 1.0f;
+        srm_config.mirror_x = 0;
+        srm_config.mirror_y = 0;
+        srm_config.rgb_swap = 0;
+        srm_config.byte_swap = 0;
+        srm_config.mode = PPA_TRANS_MODE_BLOCKING;
+
+        if (ppa_do_scale_rotate_mirror(_ppa_srm_handle, &srm_config) != ESP_OK) {
+            return;
+        }
+
+        _detect_idle = false;
+        xTaskNotifyGive(_detect_task_handle);
+    }
+
+    // Draw the mode tag and the latest results onto the LCD frame before it is blitted.
+    void Camera::drawDetectResults(uint16_t *lcd_buf, uint32_t width, uint32_t height)
+    {
+        const int w = static_cast<int>(width);
+        const int h = static_cast<int>(height);
+
+        if (_detect_mode == DetectMode::None) {
+            return;
+        }
+
+        uint16_t tag_color = (_detect_mode == DetectMode::Face) ? DETECT_COLOR_FACE_TAG : DETECT_COLOR_PED_TAG;
+        fillSquare(lcd_buf, w, h, 8, 8, DETECT_TAG_SIZE, tag_color);
+
+        xSemaphoreTake(_detect_results_mutex, portMAX_DELAY);
+        for (const auto &obj : _detect_objects) {
+            drawBox(lcd_buf, w, h, obj.x1, obj.y1, obj.x2, obj.y2, DETECT_COLOR_BOX, 3);
+            for (size_t i = 0; i + 1 < obj.keypoints.size(); i += 2) {
+                fillDot(lcd_buf, w, h, obj.keypoints[i], obj.keypoints[i + 1], 3, DETECT_COLOR_KEYPOINT);
+            }
+        }
+        xSemaphoreGive(_detect_results_mutex);
     }
 
     esp_err_t Camera::handleFrame()
@@ -610,6 +814,13 @@ namespace esp_brookesia::apps
         srm_config.mode = PPA_TRANS_MODE_BLOCKING;
 
         esp_err_t ret = ppa_do_scale_rotate_mirror(_ppa_srm_handle, &srm_config);
+        if (ret == ESP_OK && _detect_mode != DetectMode::None) {
+            uint16_t *lcd_buf = static_cast<uint16_t *>(_lcd_buffers[buffer_index]);
+            // Copy first, so the overlay drawn below is not fed back to the detector
+            submitFrameForDetect(lcd_buf, display_w, display_h);
+            drawDetectResults(lcd_buf, display_w, display_h);
+            esp_cache_msync(lcd_buf, ALIGN_UP(display_w * display_h * CAMERA_BYTES_PER_PIXEL, _data_cache_line_size), ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        }
         if (ret == ESP_OK && _dummy_enabled) {
             ret = esp_lv_adapter_dummy_draw_blit(
                 _display,
@@ -655,9 +866,12 @@ namespace esp_brookesia::apps
 
         while (_preview_running && ret == ESP_OK) {
             ret = handleFrame();
-            if (shouldExitBySwipe()) {
+            TouchGesture gesture = pollTouch();
+            if (gesture == TouchGesture::SwipeExit) {
                 request_close = true;
                 _preview_running = false;
+            } else if (gesture == TouchGesture::Tap) {
+                cycleDetectMode();
             }
         }
 
@@ -668,6 +882,13 @@ namespace esp_brookesia::apps
 
         stopDummyPreview();
         releaseCameraBuffers();
+
+        // Stop detection; the detect task releases its models when it wakes up
+        _detect_mode = DetectMode::None;
+        _detect_running = false;
+        if (_detect_task_handle) {
+            xTaskNotifyGive(_detect_task_handle);
+        }
 
         _preview_running = false;
         _preview_task_handle = nullptr;
@@ -686,6 +907,120 @@ namespace esp_brookesia::apps
     void Camera::previewTaskEntry(void *arg)
     {
         static_cast<Camera *>(arg)->previewTask();
+    }
+
+    // Runs inference on frames handed over by the preview task. Blocks on a notification, so it uses no CPU while idle.
+    void Camera::detectTask()
+    {
+        const size_t detect_bytes = ALIGN_UP(BSP_LCD_H_RES * BSP_LCD_V_RES * CAMERA_BYTES_PER_PIXEL, _data_cache_line_size);
+
+        while (true) {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+            if (!_detect_running) {
+                releaseDetectors();
+                _detect_idle = true;
+                continue;
+            }
+
+            DetectMode mode = _detect_mode;
+            if (mode == DetectMode::None || _detect_input == nullptr) {
+                _detect_idle = true;
+                continue;
+            }
+
+            // The preview task wrote this frame on another core, so drop stale cache lines before reading it
+            esp_cache_msync(_detect_input, detect_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+
+            dl::image::img_t img = {};
+            img.data = _detect_input;
+            // The detector frame is rotated, so its width is the panel height
+            img.width = BSP_LCD_V_RES;
+            img.height = BSP_LCD_H_RES;
+            img.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE;
+
+            // Map a point from the rotated detector frame back to the portrait panel frame
+            auto toPanel = [](int xr, int yr, int &x, int &y) {
+                if (DETECT_PPA_ROTATE_ANGLE == PPA_SRM_ROTATION_ANGLE_90) {
+                    x = BSP_LCD_H_RES - 1 - yr;
+                    y = xr;
+                } else {
+                    x = yr;
+                    y = BSP_LCD_V_RES - 1 - xr;
+                }
+            };
+
+            std::vector<DetectedObject> objects;
+            auto collect = [&objects, &toPanel](const std::list<dl::detect::result_t> &results, bool with_keypoints) {
+                for (const auto &res : results) {
+                    if (res.box.size() < 4) {
+                        continue;
+                    }
+                    int ax, ay, bx, by;
+                    toPanel(res.box[0], res.box[1], ax, ay);
+                    toPanel(res.box[2], res.box[3], bx, by);
+
+                    DetectedObject obj;
+                    obj.x1 = std::min(ax, bx);
+                    obj.y1 = std::min(ay, by);
+                    obj.x2 = std::max(ax, bx);
+                    obj.y2 = std::max(ay, by);
+                    if (with_keypoints && res.keypoint.size() >= 10) {
+                        for (size_t i = 0; i < 10; i += 2) {
+                            int px, py;
+                            toPanel(res.keypoint[i], res.keypoint[i + 1], px, py);
+                            obj.keypoints.push_back(px);
+                            obj.keypoints.push_back(py);
+                        }
+                    }
+                    objects.push_back(std::move(obj));
+                }
+            };
+
+            int64_t start_us = esp_timer_get_time();
+            if (mode == DetectMode::Face) {
+                if (_face_detect == nullptr) {
+                    _face_detect = new HumanFaceDetect();
+                }
+                collect(_face_detect->run(img), true);
+            } else {
+                if (_pedestrian_detect == nullptr) {
+                    _pedestrian_detect = new PedestrianDetect();
+                }
+                collect(_pedestrian_detect->run(img), false);
+            }
+            ESP_LOGI(ESP_UTILS_LOG_TAG, "%s detect: %" PRId64 " ms, %d objects",
+                     mode == DetectMode::Face ? "Face" : "Pedestrian",
+                     (esp_timer_get_time() - start_us) / 1000,
+                     static_cast<int>(objects.size()));
+
+            xSemaphoreTake(_detect_results_mutex, portMAX_DELAY);
+            _detect_objects = std::move(objects);
+            xSemaphoreGive(_detect_results_mutex);
+
+            _detect_idle = true;
+        }
+    }
+
+    void Camera::detectTaskEntry(void *arg)
+    {
+        static_cast<Camera *>(arg)->detectTask();
+    }
+
+    void Camera::releaseDetectors()
+    {
+        if (_face_detect) {
+            delete _face_detect;
+            _face_detect = nullptr;
+        }
+        if (_pedestrian_detect) {
+            delete _pedestrian_detect;
+            _pedestrian_detect = nullptr;
+        }
+
+        xSemaphoreTake(_detect_results_mutex, portMAX_DELAY);
+        _detect_objects.clear();
+        xSemaphoreGive(_detect_results_mutex);
     }
 
 } // namespace esp_brookesia::apps

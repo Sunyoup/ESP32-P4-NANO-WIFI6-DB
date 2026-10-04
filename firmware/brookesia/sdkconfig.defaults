@@ -109,3 +109,7 @@ CONFIG_FATFS_API_ENCODING_UTF_8=y
 
 # Music Player font from SD card (lv_demo_music_font.c)
 CONFIG_LV_USE_TINY_TTF=y
+
+# Face / pedestrian detect models are read from the SD card (/sdcard/models/p4/) to keep the firmware small
+CONFIG_HUMAN_FACE_DETECT_MODEL_IN_SDCARD=y
+CONFIG_PEDESTRIAN_DETECT_MODEL_IN_SDCARD=y
