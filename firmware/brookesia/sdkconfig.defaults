@@ -113,3 +113,7 @@ CONFIG_LV_USE_TINY_TTF=y
 # Face / pedestrian detect models are read from the SD card (/sdcard/models/p4/) to keep the firmware small
 CONFIG_HUMAN_FACE_DETECT_MODEL_IN_SDCARD=y
 CONFIG_PEDESTRIAN_DETECT_MODEL_IN_SDCARD=y
+
+# COCO object detect (YOLO11n 320) model is read from the SD card (/sdcard/models/p4/)
+CONFIG_COCO_DETECT_MODEL_IN_SDCARD=y
+CONFIG_COCO_DETECT_YOLO11N_320_S8_V1=y

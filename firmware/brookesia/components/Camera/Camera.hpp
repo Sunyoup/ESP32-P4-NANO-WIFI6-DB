@@ -16,6 +16,7 @@
 
 class HumanFaceDetect;
 class PedestrianDetect;
+class COCODetect;
 
 namespace esp_brookesia::apps
 {
@@ -52,11 +53,13 @@ namespace esp_brookesia::apps
             None,
             Face,
             Pedestrian,
+            Objects,
         };
 
         enum class TouchGesture {
             None,
             Tap,
+            LongPress,
             SwipeExit,
         };
 
@@ -66,6 +69,8 @@ namespace esp_brookesia::apps
             int x2 = 0;
             int y2 = 0;
             std::vector<int> keypoints;   // 5 landmarks (x, y pairs), face mode only
+            int category = 0;             // class index, Objects mode only
+            float score = 0.0f;           // confidence, Objects mode only
         };
 
         lv_obj_t *_status_label = nullptr;
@@ -83,6 +88,8 @@ namespace esp_brookesia::apps
         bool _lvgl_paused = false;
         bool _touch_active = false;
         bool _touch_tap_candidate = false;
+        int64_t _touch_start_us = 0;
+        int _last_lcd_index = 0;           // LCD buffer written by the last frame
         uint16_t _touch_start_x = 0;
         uint16_t _touch_start_y = 0;
         uint32_t _camera_width = 0;
@@ -100,10 +107,13 @@ namespace esp_brookesia::apps
         SemaphoreHandle_t _detect_results_mutex = nullptr;
         uint16_t *_detect_input = nullptr;
         volatile bool _detect_idle = true;
+        int _detect_w = 0;                 // size of the rotated frame in _detect_input
+        int _detect_h = 0;
         volatile bool _detect_running = false;
         std::vector<DetectedObject> _detect_objects;
         HumanFaceDetect *_face_detect = nullptr;
         PedestrianDetect *_pedestrian_detect = nullptr;
+        COCODetect *_coco_detect = nullptr;
 
         bool startPreview();
         void requestStopPreview();
@@ -114,6 +124,7 @@ namespace esp_brookesia::apps
         void stopDummyPreview();
         void releaseCameraBuffers();
         TouchGesture pollTouch();
+        esp_err_t saveScreenshot(const uint16_t *lcd_buf, uint32_t width, uint32_t height);
         esp_err_t handleFrame();
         void submitFrameForDetect(uint16_t *lcd_buf, uint32_t width, uint32_t height);
         void drawDetectResults(uint16_t *lcd_buf, uint32_t width, uint32_t height);

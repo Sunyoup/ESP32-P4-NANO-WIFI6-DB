@@ -581,3 +581,55 @@ Waveshare ESP32-P4-WIFI6-Touch-LCD-7B factory 펌웨어의 ai-agent 는 다른 �
  - 얼굴 모드 키포인트 위치 확인 (회전 좌표 되돌리기가 맞는지 얼굴 주변 초록 점으로 확인).
  - 검출 실패 시 로그를 남기는 것은 없다 (모델 로드 실패, SD 카드 없음 등).
  - 병합 이미지(brookesia_firmware.bin)는 이 작업 기준으로 다시 만들었다 (0x900070 바이트, 0x0 기준).
+
+
+########################################################################
+## 추가 기록 (2026-10-05): 사물 검출 YOLO11n + 라벨 + 스크린샷 (브랜치: object-detect-yolo11n)
+##   face-pedestrian-detect 에서 분기.
+########################################################################
+
+== 사물 검출 모델 (coco_detect, SD 카드) ==
+ - components/Camera/idf_component.yml: espressif/coco_detect ^0.4.0. 모델은 SD 카드에서 읽는다.
+ - sdkconfig.defaults: CONFIG_COCO_DETECT_MODEL_IN_SDCARD=y, CONFIG_COCO_DETECT_YOLO11N_320_S8_V1=y (sdkconfig 도 같이 고침).
+ - SD 카드 파일: /sdcard/models/p4/coco_detect_yolo11n_320_s8_v1.espdl (약 2.99 MB)
+   원본: managed_components/espressif__coco_detect/models/p4/
+ - 앱 크기: 0x7e3980 (약 8.3MB), 9MB factory 파티션의 12% 여유.
+
+== 탭 모드 ==
+ - 화면을 짧게 탭: Normal -> Face -> Pedestrian -> Objects -> Normal.
+ - 왼쪽 위 사각형: 얼굴 시안, 보행자 노랑, 사물 주황.
+
+== 사물 라벨 ==
+ - 사물 모드에서만 박스와 함께 "이름 점수%" 를 그린다. 예: "keyboard 88%", "mouse 88%".
+ - 이름: Camera.cpp 의 COCO_CLASS_NAMES (COCO 80 표준 순서, YOLO11n 의 category 와 같은 순서).
+   ultralytics 문서의 목록과 같은 순서로 넣었다. 실제 물체로 확인: mouse, keyboard 가 맞게 표시됨.
+ - 라벨은 박스 왼쪽 바깥에 90도 돌려서 그린다 (아래에서 위로 읽힘). 왼쪽에 자리가 없으면 오른쪽.
+   방향이 반대면 LABEL_ROTATE_CW 를 1로 (Camera.cpp).
+ - 글자: LVGL montserrat_30 글리프 (4 bpp, 압축 없음). 직접 블렌딩해서 RGB565 버퍼에 그린다.
+
+== 글자 깨짐 원인과 수정 (중요) ==
+ - 처음에는 lv_font_get_glyph_bitmap(&g, NULL) 을 불러 Load access fault 로 패닉했다 (draw buffer 가 NULL).
+ - lv_font_get_glyph_static_bitmap 은 montserrat 폰트가 static 이 아니라서 NULL 을 돌려줘서 글자가 안 그려졌다.
+ - req_raw_bitmap 을 끄고 호출하면 LVGL 이 A8 로 풀어서 draw buffer 에 넣는다. 우리는 A4 로 읽어서 점이 흩어졌다.
+   -> g.req_raw_bitmap = 1 로 raw 를 받고, font->get_glyph_bitmap(&g, nullptr) 을 직접 호출 (lv_font_get_glyph_bitmap 은 플래그를 다시 0 으로 만든다).
+ - 글자 간격은 box_w+1 이 아니라 g.adv_w 를 쓴다.
+ - stride 가 0 이면 줄마다 바이트 경계가 없다. 픽셀 번호는 y*box_w + x (4비트 단위), 바이트 = n>>1, 짝수 n 이 상위 nibble.
+   홀수 폭 글자(e, o 등)가 어긋나던 원인이었다.
+ - 진단: 글리프 번호/크기/stride 를 로그로 찍어서 확인함 (지금은 제거).
+
+== 긴 누르기 스크린샷 ==
+ - 프리뷰를 약 1초 누르고 있으면 현재 LCD 프레임을 24bit BMP 로 저장: /sdcard/Screenshots/shot_NNN.bmp
+   폴더가 없으면 만든다. 로그: "Screenshot saved: ...".
+ - PC: 보드 끄고 SD 카드 리더로 마운트. 라벨 확대는 파이썬 표준 라이브러리로 BMP->PNG 변환해서 확인.
+
+== 확인한 것 ==
+ - 사물 검출 시간: 한 번에 약 2.1~2.3초 (화면 지연의 원인). 480 폭 스케일링은 속도를 바꾸지 못해서 되돌림.
+   병목은 YOLO11n 320 추론 자체로 보인다.
+ - 라벨 글자, 이름, 회전 표시: 스크린샷으로 확인.
+ - 패닉 없음 (90초 로그 기준).
+
+== 알려진 문제 / 남은 것 ==
+ - 사물 검출 지연 (약 2초). 경량 모델 학습 또는 입력 해상도 재변환이 필요할 수 있다.
+ - 보드 USB 가 여러 번 끊겼다 (플래시 후 /dev/ttyACM0 사라짐). 케이블/전원 문제로 보인다.
+ - 깜박임: 실내 LED 조명과 카메라 노출 간섭 가능성. 아직 확인하지 않음.
+ - 얼굴/보행자 모드의 세로 방향 제약은 그대로 (사람이 똑바로 서 있어야 잡힘).

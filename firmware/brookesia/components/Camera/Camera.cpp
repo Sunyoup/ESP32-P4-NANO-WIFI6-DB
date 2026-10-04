@@ -24,9 +24,13 @@
 #include "dl_image_define.hpp"
 #include "human_face_detect.hpp"
 #include "pedestrian_detect.hpp"
+#include "coco_detect.hpp"
 
 #include <fcntl.h>
 #include <inttypes.h>
+#include <stdio.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
@@ -39,6 +43,7 @@
 #define ESP_UTILS_LOG_TAG "BS:Camera"
 
 LV_IMG_DECLARE(img_app_camera);
+LV_FONT_DECLARE(lv_font_montserrat_30);
 
 #define ALIGN_UP(num, align) (((num) + ((align) - 1)) & ~((align) - 1))
 
@@ -47,7 +52,27 @@ LV_IMG_DECLARE(img_app_camera);
 #define DETECT_COLOR_KEYPOINT   0x07E0  // green
 #define DETECT_COLOR_FACE_TAG   0x07FF  // cyan
 #define DETECT_COLOR_PED_TAG    0xFFE0  // yellow
+#define DETECT_COLOR_OBJECT     0xFD20  // orange, boxes and tag for COCO objects
+
+// COCO 80 class names in the standard order (same index as the YOLO11n model's category)
+static const char *const COCO_CLASS_NAMES[80] = {
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+    "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed",
+    "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven",
+    "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
+};
 #define DETECT_TAG_SIZE         24
+
+// Holding the preview still this long saves a screenshot to the SD card
+#ifndef LABEL_ROTATE_CW
+#define LABEL_ROTATE_CW 0   // 0: text runs upward (counter-clockwise), 1: runs downward (clockwise)
+#endif
+
+#define LONG_PRESS_US           (1000 * 1000)
 
 // Rotation applied to the detector input. PPA's 90 is counter-clockwise and 270 is clockwise.
 // Only 90 and 270 are supported, because the coordinate mapping in detectTask() assumes a 90-degree turn.
@@ -217,6 +242,98 @@ namespace esp_brookesia::apps
             for (int dx = -radius; dx <= radius; ++dx) {
                 putPixel(buf, w, h, cx + dx, cy + dy, color);
             }
+        }
+    }
+
+    // Draw a label next to a box, rotated 90 degrees so it reads with the portrait screen.
+    // The label sits on the left side of the box (right side if there is no room), starting at the box bottom.
+    // White text on a black box, alpha blended from the 4 bpp montserrat_30 glyphs.
+    static void drawLabel(uint16_t *buf, int w, int h, int bx1, int by1, int bx2, int by2, const char *text)
+    {
+        (void)by1;
+        const lv_font_t *font = &lv_font_montserrat_30;
+        const int label_h = font->line_height + 2;   // screen width of the rotated label
+
+        // Text length in pixels, which is the screen height of the rotated label
+        int label_w = 4;
+        for (const char *p = text; *p; ++p) {
+            lv_font_glyph_dsc_t g = {};
+            if (lv_font_get_glyph_dsc(font, &g, static_cast<uint8_t>(*p), 0)) {
+                label_w += g.adv_w;
+            }
+        }
+
+        int lx0 = bx1 - label_h - 2;
+        if (lx0 < 0) {
+            lx0 = bx2 + 2;
+        }
+        int ly0 = by2 - label_w;
+        lx0 = std::clamp(lx0, 0, std::max(0, w - label_h));
+        ly0 = std::clamp(ly0, 0, std::max(0, h - label_w));
+
+        // Label-local coordinates: lx runs along the text, ly is across it. Map them to the screen.
+        auto toScreen = [lx0, ly0, label_w, label_h](int lx, int ly, int &sx, int &sy) {
+#if LABEL_ROTATE_CW
+            sx = lx0 + (label_h - 1 - ly);
+            sy = ly0 + lx;
+#else
+            sx = lx0 + ly;
+            sy = ly0 + (label_w - 1 - lx);
+#endif
+        };
+
+        // Black background
+        for (int lx = 0; lx < label_w; ++lx) {
+            for (int ly = 0; ly < label_h; ++ly) {
+                int sx, sy;
+                toScreen(lx, ly, sx, sy);
+                putPixel(buf, w, h, sx, sy, 0x0000);
+            }
+        }
+
+        int pen_x = 2;
+        const int top = font->line_height - font->base_line;   // glyph top relative to the label top, before ofs_y
+        for (const char *p = text; *p; ++p) {
+            lv_font_glyph_dsc_t g = {};
+            if (!lv_font_get_glyph_dsc(font, &g, static_cast<uint8_t>(*p), 0)) {
+                continue;
+            }
+
+            // Ask for the raw font bitmap (packed A4 as stored in the font). The normal path would expand it
+            // to A8 in a draw buffer. lv_font_get_glyph_bitmap() resets req_raw_bitmap, so call the font directly.
+            g.req_raw_bitmap = 1;
+            const uint8_t *bmp = static_cast<const uint8_t *>(font->get_glyph_bitmap(&g, nullptr));
+            if (bmp == nullptr || g.format != LV_FONT_GLYPH_FORMAT_A4) {
+                pen_x += g.adv_w;
+                continue;
+            }
+
+            // With stride 0 the pixels run on across lines (no byte padding per line), so the index is y * box_w + x.
+            // With a stride, each line starts at stride bytes.
+            for (int gy = 0; gy < g.box_h; ++gy) {
+                for (int gx = 0; gx < g.box_w; ++gx) {
+                    const int n = g.stride ? gy * g.stride * 2 + gx : gy * g.box_w + gx;
+                    const uint8_t byte = bmp[n >> 1];
+                    const uint8_t nibble = (n & 1) ? (byte & 0x0F) : (byte >> 4);
+                    if (nibble == 0) {
+                        continue;
+                    }
+                    const int lx = pen_x + g.ofs_x + gx;
+                    const int ly = top - (g.ofs_y + g.box_h) + gy;
+                    if (lx < 0 || lx >= label_w || ly < 0 || ly >= label_h) {
+                        continue;
+                    }
+                    int sx, sy;
+                    toScreen(lx, ly, sx, sy);
+                    if (sx < 0 || sx >= w || sy < 0 || sy >= h) {
+                        continue;
+                    }
+                    // White over black: out = white * alpha
+                    const uint32_t alpha = nibble * 255 / 15;
+                    buf[sy * w + sx] = static_cast<uint16_t>(((alpha >> 3) << 11) | ((alpha >> 2) << 5) | (alpha >> 3));
+                }
+            }
+            pen_x += g.adv_w;
         }
     }
 
@@ -661,6 +778,7 @@ namespace esp_brookesia::apps
             _touch_tap_candidate = true;
             _touch_start_x = points[0].x;
             _touch_start_y = points[0].y;
+            _touch_start_us = esp_timer_get_time();
             return TouchGesture::None;
         }
 
@@ -673,10 +791,83 @@ namespace esp_brookesia::apps
         if (dx > TAP_MOVE_THRESHOLD || dy > TAP_MOVE_THRESHOLD) {
             _touch_tap_candidate = false;
         }
+        // Held still for a while: long press (no tap on release)
+        if (_touch_tap_candidate && esp_timer_get_time() - _touch_start_us >= LONG_PRESS_US) {
+            _touch_tap_candidate = false;
+            return TouchGesture::LongPress;
+        }
         return TouchGesture::None;
     }
 
-    // Normal -> Face -> Pedestrian -> Normal
+    // Write the LCD frame as a 24-bit BMP to /sdcard/Screenshots/shot_NNN.bmp (the SD card is mounted at /sdcard)
+    esp_err_t Camera::saveScreenshot(const uint16_t *lcd_buf, uint32_t width, uint32_t height)
+    {
+        const char *dir = "/sdcard/Screenshots";
+        if (mkdir(dir, 0777) != 0 && errno != EEXIST) {
+            ESP_LOGE(ESP_UTILS_LOG_TAG, "Create %s failed (errno %d)", dir, errno);
+            return ESP_FAIL;
+        }
+
+        char path[48] = {};
+        int index = 0;
+        for (; index < 1000; ++index) {
+            snprintf(path, sizeof(path), "%s/shot_%03d.bmp", dir, index);
+            FILE *check = fopen(path, "rb");
+            if (check == nullptr) {
+                break;
+            }
+            fclose(check);
+        }
+        ESP_RETURN_ON_FALSE(index < 1000, ESP_ERR_NOT_FOUND, ESP_UTILS_LOG_TAG, "No free screenshot name");
+
+        FILE *f = fopen(path, "wb");
+        ESP_RETURN_ON_FALSE(f != nullptr, ESP_FAIL, ESP_UTILS_LOG_TAG, "Open %s failed", path);
+
+        const uint32_t row_size = (width * 3 + 3) & ~3u;
+        const uint32_t data_size = row_size * height;
+        uint8_t header[54] = {};
+        auto put32 = [](uint8_t *p, uint32_t v) {
+            p[0] = v & 0xFF;
+            p[1] = (v >> 8) & 0xFF;
+            p[2] = (v >> 16) & 0xFF;
+            p[3] = (v >> 24) & 0xFF;
+        };
+        header[0] = 'B';
+        header[1] = 'M';
+        put32(&header[2], 54 + data_size);
+        put32(&header[10], 54);
+        put32(&header[14], 40);
+        put32(&header[18], width);
+        put32(&header[22], height);       // positive height: rows stored bottom-up
+        header[26] = 1;                   // planes
+        header[28] = 24;                  // bits per pixel
+        put32(&header[34], data_size);
+        fwrite(header, 1, sizeof(header), f);
+
+        uint8_t *row = static_cast<uint8_t *>(calloc(row_size, 1));
+        if (row == nullptr) {
+            fclose(f);
+            return ESP_ERR_NO_MEM;
+        }
+        for (int y = static_cast<int>(height) - 1; y >= 0; --y) {
+            const uint16_t *src = lcd_buf + y * width;
+            for (uint32_t x = 0; x < width; ++x) {
+                const uint16_t px = src[x];
+                // RGB565 -> BGR888 (BMP order)
+                row[x * 3 + 0] = static_cast<uint8_t>(((px & 0x1F) * 255) / 31);
+                row[x * 3 + 1] = static_cast<uint8_t>((((px >> 5) & 0x3F) * 255) / 63);
+                row[x * 3 + 2] = static_cast<uint8_t>((((px >> 11) & 0x1F) * 255) / 31);
+            }
+            fwrite(row, 1, row_size, f);
+        }
+        free(row);
+        fclose(f);
+
+        ESP_LOGI(ESP_UTILS_LOG_TAG, "Screenshot saved: %s (%" PRIu32 "x%" PRIu32 ")", path, width, height);
+        return ESP_OK;
+    }
+
+    // Normal -> Face -> Pedestrian -> Objects -> Normal
     void Camera::cycleDetectMode()
     {
         DetectMode next = DetectMode::None;
@@ -684,6 +875,8 @@ namespace esp_brookesia::apps
             next = DetectMode::Face;
         } else if (_detect_mode == DetectMode::Face) {
             next = DetectMode::Pedestrian;
+        } else if (_detect_mode == DetectMode::Pedestrian) {
+            next = DetectMode::Objects;
         }
         _detect_mode = next;
 
@@ -691,7 +884,7 @@ namespace esp_brookesia::apps
         _detect_objects.clear();
         xSemaphoreGive(_detect_results_mutex);
 
-        const char *names[] = {"Normal", "Face detect", "Pedestrian detect"};
+        const char *names[] = {"Normal", "Face detect", "Pedestrian detect", "Object detect"};
         ESP_LOGI(ESP_UTILS_LOG_TAG, "Mode: %s", names[static_cast<int>(next)]);
     }
 
@@ -704,8 +897,13 @@ namespace esp_brookesia::apps
             return;
         }
 
-        // The rotated frame swaps width and height, so the buffer size stays the same
-        size_t bytes = ALIGN_UP(width * height * CAMERA_BYTES_PER_PIXEL, _data_cache_line_size);
+        // The rotated frame is height x width, and it has the same size as the LCD frame
+        const int det_w = static_cast<int>(height);
+        const int det_h = static_cast<int>(width);
+        size_t bytes = ALIGN_UP(det_w * det_h * CAMERA_BYTES_PER_PIXEL, _data_cache_line_size);
+
+        _detect_w = det_w;
+        _detect_h = det_h;
 
         ppa_srm_oper_config_t srm_config = {};
         srm_config.in.buffer = lcd_buf;
@@ -719,8 +917,8 @@ namespace esp_brookesia::apps
 
         srm_config.out.buffer = _detect_input;
         srm_config.out.buffer_size = bytes;
-        srm_config.out.pic_w = height;
-        srm_config.out.pic_h = width;
+        srm_config.out.pic_w = det_w;
+        srm_config.out.pic_h = det_h;
         srm_config.out.block_offset_x = 0;
         srm_config.out.block_offset_y = 0;
         srm_config.out.srm_cm = CAMERA_PPA_COLOR_MODE;
@@ -752,12 +950,27 @@ namespace esp_brookesia::apps
             return;
         }
 
-        uint16_t tag_color = (_detect_mode == DetectMode::Face) ? DETECT_COLOR_FACE_TAG : DETECT_COLOR_PED_TAG;
+        uint16_t tag_color = DETECT_COLOR_PED_TAG;
+        uint16_t box_color = DETECT_COLOR_BOX;
+        if (_detect_mode == DetectMode::Face) {
+            tag_color = DETECT_COLOR_FACE_TAG;
+        } else if (_detect_mode == DetectMode::Objects) {
+            tag_color = DETECT_COLOR_OBJECT;
+            box_color = DETECT_COLOR_OBJECT;
+        }
         fillSquare(lcd_buf, w, h, 8, 8, DETECT_TAG_SIZE, tag_color);
 
         xSemaphoreTake(_detect_results_mutex, portMAX_DELAY);
         for (const auto &obj : _detect_objects) {
-            drawBox(lcd_buf, w, h, obj.x1, obj.y1, obj.x2, obj.y2, DETECT_COLOR_BOX, 3);
+            drawBox(lcd_buf, w, h, obj.x1, obj.y1, obj.x2, obj.y2, box_color, 3);
+            if (_detect_mode == DetectMode::Objects) {
+                // "name score%" beside the box, rotated to match the portrait screen, e.g. "person 87%"
+                const bool known = obj.category >= 0 && obj.category < 80;
+                char text[48];
+                snprintf(text, sizeof(text), "%s %d%%", known ? COCO_CLASS_NAMES[obj.category] : "unknown",
+                         static_cast<int>(obj.score * 100.0f + 0.5f));
+                drawLabel(lcd_buf, w, h, obj.x1, obj.y1, obj.x2, obj.y2, text);
+            }
             for (size_t i = 0; i + 1 < obj.keypoints.size(); i += 2) {
                 fillDot(lcd_buf, w, h, obj.keypoints[i], obj.keypoints[i + 1], 3, DETECT_COLOR_KEYPOINT);
             }
@@ -777,6 +990,7 @@ namespace esp_brookesia::apps
         }
 
         uint8_t buffer_index = v4l2_buf.index % CONFIG_BSP_LCD_DPI_BUFFER_NUMS;
+        _last_lcd_index = buffer_index;
         const uint32_t display_w = BSP_LCD_H_RES;
         const uint32_t display_h = BSP_LCD_V_RES;
         // Rotate by 90 degrees when the camera frame and the panel have different orientations.
@@ -872,6 +1086,12 @@ namespace esp_brookesia::apps
                 _preview_running = false;
             } else if (gesture == TouchGesture::Tap) {
                 cycleDetectMode();
+            } else if (gesture == TouchGesture::LongPress) {
+                uint16_t *shot = static_cast<uint16_t *>(_lcd_buffers[_last_lcd_index]);
+                const size_t shot_bytes = ALIGN_UP(BSP_LCD_H_RES * BSP_LCD_V_RES * CAMERA_BYTES_PER_PIXEL, _data_cache_line_size);
+                // The PPA wrote this frame by DMA, so drop stale cache lines before the CPU reads it
+                esp_cache_msync(shot, shot_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                saveScreenshot(shot, BSP_LCD_H_RES, BSP_LCD_V_RES);
             }
         }
 
@@ -912,8 +1132,6 @@ namespace esp_brookesia::apps
     // Runs inference on frames handed over by the preview task. Blocks on a notification, so it uses no CPU while idle.
     void Camera::detectTask()
     {
-        const size_t detect_bytes = ALIGN_UP(BSP_LCD_H_RES * BSP_LCD_V_RES * CAMERA_BYTES_PER_PIXEL, _data_cache_line_size);
-
         while (true) {
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
@@ -930,13 +1148,13 @@ namespace esp_brookesia::apps
             }
 
             // The preview task wrote this frame on another core, so drop stale cache lines before reading it
+            const size_t detect_bytes = ALIGN_UP(_detect_w * _detect_h * CAMERA_BYTES_PER_PIXEL, _data_cache_line_size);
             esp_cache_msync(_detect_input, detect_bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
             dl::image::img_t img = {};
             img.data = _detect_input;
-            // The detector frame is rotated, so its width is the panel height
-            img.width = BSP_LCD_V_RES;
-            img.height = BSP_LCD_H_RES;
+            img.width = _detect_w;
+            img.height = _detect_h;
             img.pix_type = dl::image::DL_IMAGE_PIX_TYPE_RGB565LE;
 
             // Map a point from the rotated detector frame back to the portrait panel frame
@@ -965,6 +1183,8 @@ namespace esp_brookesia::apps
                     obj.y1 = std::min(ay, by);
                     obj.x2 = std::max(ax, bx);
                     obj.y2 = std::max(ay, by);
+                    obj.category = res.category;
+                    obj.score = res.score;
                     if (with_keypoints && res.keypoint.size() >= 10) {
                         for (size_t i = 0; i < 10; i += 2) {
                             int px, py;
@@ -983,14 +1203,19 @@ namespace esp_brookesia::apps
                     _face_detect = new HumanFaceDetect();
                 }
                 collect(_face_detect->run(img), true);
-            } else {
+            } else if (mode == DetectMode::Pedestrian) {
                 if (_pedestrian_detect == nullptr) {
                     _pedestrian_detect = new PedestrianDetect();
                 }
                 collect(_pedestrian_detect->run(img), false);
+            } else {
+                if (_coco_detect == nullptr) {
+                    _coco_detect = new COCODetect();
+                }
+                collect(_coco_detect->run(img), false);
             }
             ESP_LOGI(ESP_UTILS_LOG_TAG, "%s detect: %" PRId64 " ms, %d objects",
-                     mode == DetectMode::Face ? "Face" : "Pedestrian",
+                     mode == DetectMode::Face ? "Face" : (mode == DetectMode::Pedestrian ? "Pedestrian" : "Object"),
                      (esp_timer_get_time() - start_us) / 1000,
                      static_cast<int>(objects.size()));
 
@@ -1016,6 +1241,10 @@ namespace esp_brookesia::apps
         if (_pedestrian_detect) {
             delete _pedestrian_detect;
             _pedestrian_detect = nullptr;
+        }
+        if (_coco_detect) {
+            delete _coco_detect;
+            _coco_detect = nullptr;
         }
 
         xSemaphoreTake(_detect_results_mutex, portMAX_DELAY);
