@@ -703,3 +703,21 @@ Waveshare ESP32-P4-WIFI6-Touch-LCD-7B factory 펌웨어의 ai-agent 는 다른 �
  - 물결 세기/감쇠/속도는 사용자가 실제로 보고 두 차례 조정한 상태. 더 다듬을 여지 있음.
  - 체커보드는 영상의 2단 무늬가 아니라 단순화한 것.
  - RGB888 패널은 지원하지 않음(컴파일 타임 #error).
+
+
+== 추가 기록 (같은 날): 멀티터치 3점, FPS 로그 ==
+ - 터치 하드웨어/설정 확인: sdkconfig 의 CONFIG_ESP_LCD_TOUCH_MAX_POINTS=5. GT911 드라이버는
+   esp_lcd_touch_get_data() 호출 시 넘기는 max_point_cnt 만큼 점을 돌려준다. Camera/Water2D 는
+   처음에 1점만 요청해서 1점으로 보였던 것이고, 하드웨어 제약이 아니었다.
+ - Water2D::pollTouchAndExit() 를 점 배열(MAX_TOUCH_POINTS=3) 기반으로 바꿔서 손가락 3개까지
+   각각 독립적으로 물결(splash)을 찍는다. 점은 프레임 간 슬롯 인덱스로만 매칭한다(손가락 ID 추적 안 함).
+   손가락이 떼었다 붙는 순간 한 프레임 정도 "움직임"으로 잘못 판단할 수 있지만, 그 경우 결과는
+   길게 누르기 종료가 늦게 판정되는 쪽으로만 안전하게 어긋난다(오동작으로 일찍 종료되지 않음).
+ - 사용자 확인: 3점 동시 터치 정상 동작.
+ - Drawpanel 앱은 그대로 1점만 그린다. 거기는 esp_lcd_touch 를 직접 안 쓰고 LVGL 의 lv_indev
+   포인터 입력 장치 이벤트(LV_EVENT_PRESSING, lv_indev_get_point)로 그리는데, LVGL 의 기본
+   포인터 indev 모델 자체가 한 번에 한 점만 다룬다. 고치려면 Water2D 처럼 raw 터치 폴링으로
+   바꿔야 해서 더 큰 변경이 필요하다. 이번에는 손대지 않음.
+ - FPS 로그: Water2D 앱이 돌 때만 1초마다 "FPS: xx.x" 를 찍는다(simTask 루프 안, 다른 앱에는 없음).
+   사용자 확인: 31.2~31.3 으로 일정함 (목표 33ms/프레임 ≈ 30.3fps 보다 살짝 빠른데, vTaskDelay 가
+   10ms tick 단위로 반올림되어서 그런 것으로 보임. 문제 없는 수준이라 그대로 둠).

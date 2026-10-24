@@ -307,7 +307,9 @@ namespace esp_brookesia::apps
             _touch_handle = nullptr;
         }
 
-        _touch_active = false;
+        for (auto &t : _touch) {
+            t.active = false;
+        }
     }
 
     // newHeight = (sum of 4 neighbors in the latest buffer) / 2 - (value the target buffer held
@@ -393,39 +395,55 @@ namespace esp_brookesia::apps
 
         esp_lcd_touch_read_data(_touch_handle);
 
-        esp_lcd_touch_point_data_t points[1] = {};
+        esp_lcd_touch_point_data_t points[MAX_TOUCH_POINTS] = {};
         uint8_t point_num = 0;
-        esp_err_t ret = esp_lcd_touch_get_data(_touch_handle, points, &point_num, 1);
+        esp_err_t ret = esp_lcd_touch_get_data(_touch_handle, points, &point_num, MAX_TOUCH_POINTS);
 
         if (ret != ESP_OK || point_num == 0) {
-            _touch_active = false;
+            for (auto &t : _touch) {
+                t.active = false;
+            }
             return false;
         }
 
-        if (!_touch_active) {
-            _touch_active = true;
-            _touch_moved = false;
-            _touch_start_x = points[0].x;
-            _touch_start_y = points[0].y;
-            _touch_start_us = esp_timer_get_time();
-        } else {
-            int dx = static_cast<int>(points[0].x) - static_cast<int>(_touch_start_x);
-            int dy = static_cast<int>(points[0].y) - static_cast<int>(_touch_start_y);
-            if (dx * dx + dy * dy > TOUCH_MOVE_THRESHOLD * TOUCH_MOVE_THRESHOLD) {
-                _touch_moved = true;
+        // Points aren't tracked by a stable finger ID across calls, just matched by slot index.
+        // That only risks a one-frame "moved" misjudgment right as a finger lifts/lands, which is
+        // harmless here (it can only delay the long-press exit, never trigger it early).
+        bool exit_requested = false;
+        const int64_t now = esp_timer_get_time();
+
+        for (uint8_t i = 0; i < point_num; ++i) {
+            TouchState &t = _touch[i];
+            if (!t.active) {
+                t.active = true;
+                t.moved = false;
+                t.start_x = points[i].x;
+                t.start_y = points[i].y;
+                t.start_us = now;
+            } else {
+                int dx = static_cast<int>(points[i].x) - static_cast<int>(t.start_x);
+                int dy = static_cast<int>(points[i].y) - static_cast<int>(t.start_y);
+                if (dx * dx + dy * dy > TOUCH_MOVE_THRESHOLD * TOUCH_MOVE_THRESHOLD) {
+                    t.moved = true;
+                }
+            }
+
+            int gx = std::clamp(static_cast<int>(points[i].x) * GRID_W / BSP_LCD_H_RES, 0, GRID_W - 1);
+            int gy = std::clamp(static_cast<int>(points[i].y) * GRID_H / BSP_LCD_V_RES, 0, GRID_H - 1);
+            splash(gx, gy, SPLASH_AMOUNT);
+
+            // Held still (no drag) long enough: treat as "done", since dragging to make ripples is
+            // the normal interaction and would otherwise conflict with a swipe-to-exit gesture.
+            if (!t.moved && (now - t.start_us) >= LONG_PRESS_US) {
+                exit_requested = true;
             }
         }
 
-        int gx = std::clamp(static_cast<int>(points[0].x) * GRID_W / BSP_LCD_H_RES, 0, GRID_W - 1);
-        int gy = std::clamp(static_cast<int>(points[0].y) * GRID_H / BSP_LCD_V_RES, 0, GRID_H - 1);
-        splash(gx, gy, SPLASH_AMOUNT);
-
-        // Held still (no drag) long enough: treat as "done", since dragging to make ripples is
-        // the normal interaction and would otherwise conflict with a swipe-to-exit gesture.
-        if (!_touch_moved && (esp_timer_get_time() - _touch_start_us) >= LONG_PRESS_US) {
-            return true;
+        for (uint8_t i = point_num; i < MAX_TOUCH_POINTS; ++i) {
+            _touch[i].active = false;
         }
-        return false;
+
+        return exit_requested;
     }
 
     void Water2D::simTask()
@@ -436,6 +454,9 @@ namespace esp_brookesia::apps
         uint32_t buffer_index = 0;
         int64_t last_frame_us = esp_timer_get_time();
         const size_t render_bytes = ALIGN_UP(GRID_CELLS * sizeof(uint16_t), _data_cache_line_size);
+
+        int fps_frame_count = 0;
+        int64_t fps_window_start_us = esp_timer_get_time();
 
         while (_sim_running && ret == ESP_OK) {
             simulateStep();
@@ -477,6 +498,18 @@ namespace esp_brookesia::apps
             ret = ppa_do_scale_rotate_mirror(_ppa_srm_handle, &srm_config);
             if (ret == ESP_OK && _dummy_enabled) {
                 ret = esp_lv_adapter_dummy_draw_blit(_display, 0, 0, BSP_LCD_H_RES, BSP_LCD_V_RES, lcd_buf, true);
+            }
+
+            ++fps_frame_count;
+            {
+                int64_t fps_now = esp_timer_get_time();
+                int64_t fps_elapsed = fps_now - fps_window_start_us;
+                if (fps_elapsed >= 1000000) {
+                    float fps = fps_frame_count * 1000000.0f / static_cast<float>(fps_elapsed);
+                    ESP_LOGI(ESP_UTILS_LOG_TAG, "FPS: %.1f", fps);
+                    fps_frame_count = 0;
+                    fps_window_start_us = fps_now;
+                }
             }
 
             if (pollTouchAndExit()) {

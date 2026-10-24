@@ -60,6 +60,9 @@ namespace esp_brookesia::apps
         // ripples is the normal interaction, so exit needs a gesture that doesn't conflict).
         static constexpr int64_t LONG_PRESS_US = 1200 * 1000;
         static constexpr int TOUCH_MOVE_THRESHOLD = 12; // screen px
+        // The touch driver (GT911) supports up to CONFIG_ESP_LCD_TOUCH_MAX_POINTS (5); 3 is plenty
+        // for ripples and keeps esp_lcd_touch_point_data_t points[] small on the stack.
+        static constexpr int MAX_TOUCH_POINTS = 3;
 
         lv_display_t *_display = nullptr;
         esp_lcd_panel_handle_t _display_panel = nullptr;
@@ -72,11 +75,14 @@ namespace esp_brookesia::apps
         bool _dummy_enabled = false;
         bool _lvgl_paused = false;
 
-        bool _touch_active = false;
-        bool _touch_moved = false;
-        int64_t _touch_start_us = 0;
-        uint16_t _touch_start_x = 0;
-        uint16_t _touch_start_y = 0;
+        struct TouchState {
+            bool active = false;
+            bool moved = false;
+            int64_t start_us = 0;
+            uint16_t start_x = 0;
+            uint16_t start_y = 0;
+        };
+        TouchState _touch[MAX_TOUCH_POINTS];
 
         size_t _data_cache_line_size = 64;
         void *_lcd_buffers[CONFIG_BSP_LCD_DPI_BUFFER_NUMS] = {};
