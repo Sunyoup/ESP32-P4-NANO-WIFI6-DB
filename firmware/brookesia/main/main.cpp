@@ -28,6 +28,7 @@
 #include "esp_brookesia_app_calculator.hpp"
 #include "UartTool.hpp"
 #include "EthernetTest.hpp"
+#include "Water2D.hpp"
 
 using namespace esp_brookesia;
 using namespace esp_brookesia::gui;
@@ -132,6 +133,8 @@ extern "C" void app_main(void)
         ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(uart_tool_app), "Install UartTool failed");
         auto ethernet_test_app = esp_brookesia::apps::EthernetTest::requestInstance();
         ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(ethernet_test_app), "Install EthernetTest failed");
+        auto water2d_app = esp_brookesia::apps::Water2D::requestInstance();
+        ESP_UTILS_CHECK_FALSE_EXIT(phone->installApp(water2d_app), "Install Water2D failed");
 
         bsp_display_backlight_on();
 

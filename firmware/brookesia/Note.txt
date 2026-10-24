@@ -633,3 +633,73 @@ Waveshare ESP32-P4-WIFI6-Touch-LCD-7B factory 펌웨어의 ai-agent 는 다른 �
  - 보드 USB 가 여러 번 끊겼다 (플래시 후 /dev/ttyACM0 사라짐). 케이블/전원 문제로 보인다.
  - 깜박임: 실내 LED 조명과 카메라 노출 간섭 가능성. 아직 확인하지 않음.
  - 얼굴/보행자 모드의 세로 방향 제약은 그대로 (사람이 똑바로 서 있어야 잡힘).
+
+
+########################################################################
+## 추가 기록 (2026-10-25): 32MB 플래시, 2D Water 앱 (브랜치: 2DWater)
+##   object-detect-yolo11n 에서 분기. 32MB 설정만 object-detect-yolo11n 에 먼저 커밋했다.
+########################################################################
+
+== Wi-Fi 전용 보드(ESP32-P4-WIFI6-DB) 호환 확인 ==
+ - 이 보드에 지금 펌웨어(ESP32-P4-NANO-WIFI6-DB 용)를 그대로 플래시해서 동작 확인함.
+   화면 방향, Wi-Fi, SD카드, 카메라, 음악/영상, 검출 모드 전부 정상.
+ - 이더넷 앱(EthernetTest)에서 ping gateway 를 누르면 그냥 실패로 끝난다(이 보드엔 PHY 가 없음).
+   패닉이나 멈춤 없이 정상적으로 실패 처리됨.
+ - 회로는 두 보드가 이더넷 유무 빼고 기본적으로 같은 것으로 보인다.
+
+== 32MB 플래시 (GD25Q256) ==
+ - 회로도 확인: U8 = GD25Q128ESIG, SOP-8 표준 SPI 핀맵(1 CS 2 DO 3 WP 4 GND 5 DI 6 CLK 7 HOLD 8 VCC).
+ - ESP-IDF 소스 확인(spi_flash_chip_gd.c): GigaDevice 칩 ID 끝자리가 0x19 이상이면
+   SPI_FLASH_CHIP_CAP_32MB_SUPPORT 를 자동으로 켠다. GD25Q256 ID(0xC84019)가 정확히 여기 해당되어
+   4바이트 주소 모드가 코드 수정 없이 자동 처리된다. bootloader_flash_config_esp32p4.c 에도
+   ESP_IMAGE_FLASH_SIZE_32MB 케이스가 이미 있다.
+ - sdkconfig/sdkconfig.defaults 의 CONFIG_ESPTOOLPY_FLASHSIZE 를 16MB -> 32MB 로만 바꿨다.
+   partitions.csv 는 그대로 둠(지금 쓰는 공간이 16MB 안에 다 들어감). 32MB 보드에 플래시해서
+   정상 부팅 확인함(esptool 로그에 --flash-size 32MB 로 기록됨, 해시 검증 통과).
+ - 이 변경은 object-detect-yolo11n 브랜치에 커밋했다(fcb4d7f 다음 커밋). 2DWater 는 그 다음부터 분기.
+
+== 2D Water 앱 (components/Water2D) ==
+ - 참고 영상: 사용자가 올린 "Real-time 2d water physics on the ESP32-P4" 쇼츠 캡처
+   (firmware/brookesia/Real-time 2d water physics on the ESP32-P4 #esp32p4.mp4, 커밋하지 않음).
+   알고리즘 출처: Hugo Elias, "Water" (xx_water.htm, web.archive.org 캐시본).
+ - 클래스/폴더 이름은 Water2D (C++ 식별자가 숫자로 시작할 수 없어서). 런처 표시 이름은 "2D Water".
+   브랜치 이름만 사용자 요청대로 2DWater.
+
+알고리즘
+ - 높이 버퍼 두 개를 핑퐁: newHeight = (이웃 4개 합)/2 - (두 프레임 전 값), 그다음 감쇠(>>DAMPING_SHIFT).
+ - 렌더링: 높이의 기울기(dx,dy)로 체커보드 배경 샘플링 좌표를 굴절시키고, 기울기 합으로 밝기를 더해
+   파도의 밝은/어두운 띠를 만든다(RGB565 shade() 헬퍼, R/B는 +add, G는 +add*2).
+ - 배경은 영상처럼 2단 체커는 아니고 파란 2색 단순 체커보드로 단순화함.
+
+구조 (Camera 앱과 같은 패턴 재사용)
+ - 패널(720x1280)을 그대로 계산하면 느려서, 격자 90x160(가로세로 1/8)에서 물리+렌더링을 하고
+   PPA로 패널 크기까지 확대한다. LVGL 정지(esp_lv_adapter_set_dummy_draw) + 프레임버퍼 직접 쓰기는
+   Camera.cpp 의 startDummyPreview/handleFrame 과 동일한 구조.
+ - V4L2 DQBUF 같은 프레임 공급원이 없으므로, LCD 프레임버퍼 3개를 직접 라운드로빈으로 순회하며 쓴다.
+ - 목표 프레임 간격 33ms(약 30fps)로 페이싱.
+ - 조작: 터치 후 끌면 그 지점에 계속 물결(splash)을 찍는다(드래그 자국 효과).
+   화면을 약 1.2초 움직이지 않고 누르고 있으면 종료(notifyCoreClosed). 드래그와 겹치지 않는
+   제스처로 선택한 것.
+
+버그와 수정: 맨 아래 줄 깜박임
+ - 원인: 처음에 격자를 1/6로 잡아서 GRID_H=213 이었는데, 1280/213 이 정수가 아니었다(213*6=1278,
+   2픽셀 모자람). PPA 확대 배율이 딱 안 맞아서 프레임마다 맨 아래 몇 줄을 다 못 덮어썼고,
+   라운드로빈으로 쓰는 LCD 프레임버퍼 3개에 남아있던 서로 다른 찌꺼기가 번갈아 보여 깜박임으로 나타난 것으로 추정.
+ - 수정: 다운스케일을 8로 바꿔서 720/8=90, 1280/8=160 모두 정확히 나누어떨어지게 함
+   (PPA 배율이 정확히 8.0배). 사용자 확인: 깜박임 사라짐.
+ - 같은 김에 REFRACT_SHIFT(4->5), LIGHT_SHIFT(3->4), SPLASH_RADIUS(2->1) 도 줄여서 물결을 더 가늘게 함.
+   사용자 확인: 괜찮음.
+
+튜닝 상수 (Water2D.cpp 상단)
+ - DAMPING_SHIFT, REFRACT_SHIFT, LIGHT_SHIFT, SPLASH_RADIUS, SPLASH_AMOUNT.
+ - GRID_DOWNSCALE (Water2D.hpp): 720 과 1280 을 모두 정확히 나누는 값을 써야 한다(깜박임 버그 참고).
+   8 외에 다른 공통 약수 후보: GCD(720,1280)=80 이므로 1,2,4,5,8,10,16,20,40,80 중 선택 가능.
+
+아이콘
+ - 파이썬으로 직접 생성(PIL 없이), 112x112 ARGB8888, 다른 앱 아이콘과 같은 원형 안티에일리어싱
+   디스크 형태 + 동심원 물결 링. components/Water2D/assets/img_app_water2d.c.
+
+== 알려진 문제 / 남은 것 ==
+ - 물결 세기/감쇠/속도는 사용자가 실제로 보고 두 차례 조정한 상태. 더 다듬을 여지 있음.
+ - 체커보드는 영상의 2단 무늬가 아니라 단순화한 것.
+ - RGB888 패널은 지원하지 않음(컴파일 타임 #error).
