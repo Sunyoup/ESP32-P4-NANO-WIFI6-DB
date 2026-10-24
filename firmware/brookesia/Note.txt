@@ -721,3 +721,9 @@ Waveshare ESP32-P4-WIFI6-Touch-LCD-7B factory 펌웨어의 ai-agent 는 다른 �
  - FPS 로그: Water2D 앱이 돌 때만 1초마다 "FPS: xx.x" 를 찍는다(simTask 루프 안, 다른 앱에는 없음).
    사용자 확인: 31.2~31.3 으로 일정함 (목표 33ms/프레임 ≈ 30.3fps 보다 살짝 빠른데, vTaskDelay 가
    10ms tick 단위로 반올림되어서 그런 것으로 보임. 문제 없는 수준이라 그대로 둠).
+
+== 당분간 기본 보드 변경 ==
+ - 2026-10-25 이후 당분간 ESP32-P4-WIFI6-DB(이더넷 없음, 32MB flash, P4 rev3.2)를 기본으로 쓰기로 함.
+   ESP32-P4-NANO-WIFI6-DB 대비 이더넷만 빠지고, flash 용량이 크고 칩 리비전이 더 높아 성능이 가장 좋음.
+   16MB 보드로 되돌리려면 sdkconfig/sdkconfig.defaults 의 CONFIG_ESPTOOLPY_FLASHSIZE 를
+   32MB -> 16MB 로 바꾸고 다시 빌드하면 된다(그 외 설정은 바꿀 필요 없음, 위 "32MB 플래시" 항목 참고).
